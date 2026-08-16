@@ -52,8 +52,9 @@ Workflowには `actions/upload-artifact` と `actions/cache` を使用してい�
 - Voice `model.safetensors` SHA-256: `9ebaa8dd3bf35ceb6217cd19142bdabe6d6c044cca40672d2ae163d1a90ab47e`
 - Higgs codec source: `k2-fsa/OmniVoice` @ `5337ba6bfe0ab30725fed141678a054fbedbf7da`
 - Higgs `audio_tokenizer/model.safetensors` SHA-256: `fe7c5e8785e0a05833e1bfc3e002ec7f55af21e306b2e7154a448c1f54ccfb0d`
+- OmniVoice converter/runtime code license source: `k2-fsa/OmniVoice` release `0.2.1` @ `5ba967c4d5b0f08244ae856b033eea583d1e4517`
 
-各downloadは固定revisionだけでなくbyte sizeとSHA-256も検証します。
+model checkpointは固定revisionに加えてbyte sizeとSHA-256を検証します。OmniVoice code LICENSEは`omnivoice==0.2.1`のimmutable Git commitから取得し、Meta Llama 3 LICENSEは取得内容のSHA-256を検証します。
 
 ## ライセンスと利用条件
 
@@ -66,7 +67,7 @@ https://tyc.rei-yumesaki.net/material/corpus/
 
 full-finetuneのmodel cardが定める生成音声の利用制限、改変・再配布条件、つくよみちゃんコーパス利用条件を確認してください。WorkflowはReleaseへ英語/日本語model cardを同梱します。
 
-また、初期checkpointである `k2-fsa/OmniVoice` の公式model cardは、コードをApache-2.0、pre-trained modelを学習データ制約によりCC-BY-NCと記載しています。この変換リポジトリは、それらのupstream model条件がfull-finetuneやONNX化によって消滅・緩和されたとは扱いません。固定revisionのOmniVoice model cardとcode LICENSEもReleaseへ同梱します。
+また、初期checkpointである `k2-fsa/OmniVoice` の公式model cardは、コードをApache-2.0、pre-trained modelを学習データ制約によりCC-BY-NCと記載しています。この変換リポジトリは、それらのupstream model条件がfull-finetuneやONNX化によって消滅・緩和されたとは扱いません。固定model revisionのOmniVoice model cardに加え、変換で使用する `omnivoice==0.2.1` に対応するGitHub release commitからcode LICENSEを別途取得してReleaseへ同梱します。Hugging Face model repoのrootにはcode LICENSEが存在しないため、`audio_tokenizer/LICENSE` と混同しません。
 
 Higgs decoderはBoson Higgs Audio 2 materialsを利用します。ReleaseにはBoson Higgs Audio 2 Community License AgreementとMeta Llama 3 Community License Agreementのコピー、および必要なNOTICEを同梱します。
 

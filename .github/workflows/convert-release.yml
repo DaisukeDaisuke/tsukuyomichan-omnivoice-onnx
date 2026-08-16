@@ -77,6 +77,9 @@ jobs:
             --release-dir "$RELEASE_DIR"
           rm -rf "$BUILD_ROOT/base-omnivoice"
 
+      - name: Include pinned OmniVoice code license
+        run: python scripts/fetch_omnivoice_code_license.py --output "$RELEASE_DIR/OMNIVOICE_CODE_LICENSE.txt"
+
       - name: Include verified Meta Llama 3 license
         run: python scripts/fetch_meta_license.py --output "$RELEASE_DIR/META-LLAMA-3-LICENSE.txt"
 

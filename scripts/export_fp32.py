@@ -122,17 +122,25 @@ def strip_weight_norm(module: nn.Module) -> None:
 
 def torch_export(module: nn.Module, inputs: tuple[torch.Tensor, ...], path: Path, input_names: list[str], output_names: list[str], dynamic_axes: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    torch.onnx.export(
+    # PyTorch 2.9+ deprecates the legacy TorchScript exporter.  The current
+    # torch.export-based exporter uses dynamic_shapes for model inputs; output
+    # symbolic dimensions are inferred from the exported graph.
+    dynamic_shapes = {
+        name: dynamic_axes[name]
+        for name in input_names
+        if name in dynamic_axes
+    }
+    onnx_program = torch.onnx.export(
         module,
         inputs,
-        str(path),
         input_names=input_names,
         output_names=output_names,
-        dynamic_axes=dynamic_axes,
+        dynamic_shapes=dynamic_shapes,
         opset_version=18,
-        do_constant_folding=True,
-        dynamo=False,
+        dynamo=True,
+        external_data=False,
     )
+    onnx_program.save(str(path), external_data=False)
 
 
 def externalize(raw_path: Path, final_path: Path, data_name: str) -> None:

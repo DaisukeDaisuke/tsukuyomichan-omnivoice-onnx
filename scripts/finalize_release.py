@@ -150,6 +150,12 @@ def build_manifest(release: Path, work: Path) -> dict:
             "assetBaseUrl": "https://github.com/DaisukeDaisuke/tsukuyomichan-omnivoice-onnx/releases/download/full-finetune-latest/",
         },
         "source": {
+            "omnivoiceCode": {
+                "repo": "k2-fsa/OmniVoice",
+                "release": "0.2.1",
+                "revision": "5ba967c4d5b0f08244ae856b033eea583d1e4517",
+                "license": "Apache-2.0",
+            },
             "voiceCheckpoint": {
                 "repo": full_source["repo"],
                 "revision": full_source["revision"],

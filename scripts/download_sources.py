@@ -32,7 +32,6 @@ FULL_PATTERNS = [
 ]
 HIGGS_PATTERNS = [
     "README.md",
-    "LICENSE",
     "audio_tokenizer/model.safetensors",
     "audio_tokenizer/config.json",
     "audio_tokenizer/preprocessor_config.json",
@@ -101,7 +100,6 @@ def download_higgs(work: Path, release: Path) -> None:
     verify(higgs_dir / "model.safetensors", HIGGS_MODEL_SIZE, HIGGS_MODEL_SHA256)
     shutil.copy2(higgs_dir / "LICENSE", release / "BOSON-HIGGS-AUDIO-2-LICENSE.txt")
     shutil.copy2(base_dir / "README.md", release / "OMNIVOICE_MODEL_CARD.md")
-    shutil.copy2(base_dir / "LICENSE", release / "OMNIVOICE_CODE_LICENSE.txt")
     (work / "higgs-source.json").write_text(
         json.dumps(
             {

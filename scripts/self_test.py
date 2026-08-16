@@ -9,9 +9,10 @@ from pathlib import Path
 
 import numpy as np
 import onnx
+import torch
 from onnx import TensorProto, helper, numpy_helper
 
-from export_fp32 import split_oversized_external_data, validate_unquantized_graph
+from export_fp32 import ort_session, split_oversized_external_data, torch_export, validate_unquantized_graph
 from finalize_release import REQUIRED_FILES, REQUIRED_MODELS, check_release_files
 
 
@@ -21,10 +22,12 @@ def test_required_model_apis_import() -> None:
     # top-level model export.
     from omnivoice import OmniVoice
     import onnx_ir
+    import onnxscript
     from transformers import HiggsAudioV2TokenizerModel
 
     assert callable(getattr(OmniVoice, "from_pretrained", None))
     assert callable(getattr(onnx_ir, "load", None))
+    assert hasattr(onnxscript, "__version__")
     assert callable(getattr(HiggsAudioV2TokenizerModel, "from_pretrained", None))
 
     # The ORT GenAI wheel exposes the model builder as a Python module, but
@@ -36,6 +39,43 @@ def test_required_model_apis_import() -> None:
         check=True,
         stdout=subprocess.DEVNULL,
     )
+
+
+def test_modern_torch_onnx_export(root: Path) -> None:
+    class TinyAdd(torch.nn.Module):
+        def forward(self, value: torch.Tensor) -> torch.Tensor:
+            return value + 1.0
+
+    path = root / "modern-export.onnx"
+    value = torch.arange(6, dtype=torch.float32).reshape(1, 6)
+    torch_export(
+        TinyAdd().eval(),
+        (value,),
+        path,
+        ["value"],
+        ["result"],
+        {
+            "value": {0: "batch", 1: "seq"},
+            "result": {0: "batch", 1: "seq"},
+        },
+    )
+    onnx.checker.check_model(onnx.load(str(path), load_external_data=False))
+    actual = ort_session(path).run(["result"], {"value": value.numpy()})[0]
+    np.testing.assert_allclose(actual, value.numpy() + 1.0, rtol=0.0, atol=0.0)
+
+
+def test_pinned_license_fetches(root: Path) -> None:
+    scripts_dir = Path(__file__).resolve().parent
+    for script_name, output_name in (
+        ("fetch_omnivoice_code_license.py", "OMNIVOICE_CODE_LICENSE.txt"),
+        ("fetch_meta_license.py", "META-LLAMA-3-LICENSE.txt"),
+    ):
+        output = root / output_name
+        subprocess.run(
+            [sys.executable, str(scripts_dir / script_name), "--output", str(output)],
+            check=True,
+        )
+        assert output.is_file() and output.stat().st_size > 0
 
 
 def save_two_weight_model(path: Path) -> tuple[np.ndarray, np.ndarray]:
@@ -122,6 +162,8 @@ def main() -> None:
     test_required_model_apis_import()
     with tempfile.TemporaryDirectory(prefix="tsukuyomichan-onnx-self-test-") as temp:
         root = Path(temp)
+        test_modern_torch_onnx_export(root)
+        test_pinned_license_fetches(root)
         test_external_data_split(root)
         test_quantized_graph_rejected(root)
         test_release_rejects_safetensors(root)
