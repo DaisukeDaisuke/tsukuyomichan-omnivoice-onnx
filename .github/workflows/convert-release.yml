@@ -25,6 +25,7 @@ jobs:
           printf 'BUILD_ROOT=%s\n' "$build_root" >> "$GITHUB_ENV"
           printf 'HF_HOME=%s\n' "$build_root/hf-home" >> "$GITHUB_ENV"
           printf 'RELEASE_DIR=%s\n' "$GITHUB_WORKSPACE/dist" >> "$GITHUB_ENV"
+          printf 'SAMPLES_DIR=%s\n' "$GITHUB_WORKSPACE/samples" >> "$GITHUB_ENV"
           printf 'HF_REVISION=gh-%s-%s\n' "$GITHUB_SHA" "$GITHUB_RUN_ID" >> "$GITHUB_ENV"
 
       - name: Checkout converter
@@ -106,6 +107,54 @@ jobs:
             --release-dir "$RELEASE_DIR" \
             --hf-revision "$HF_REVISION"
 
+      - name: Generate native CPU audio samples
+        shell: bash
+        run: |
+          rm -rf "$SAMPLES_DIR"
+          mkdir -p "$SAMPLES_DIR"
+
+          generate_sample() {
+            filename="$1"
+            text="$2"
+            seed="$3"
+            language="$4"
+            output="$BUILD_ROOT/sample-${filename%.wav}"
+            rm -rf "$output"
+            python scripts/native-omnivoice-smoke.py \
+              --model-dir "$RELEASE_DIR" \
+              --output-dir "$output" \
+              --text "$text" \
+              --language "$language" \
+              --speed 1.0 \
+              --seed "$seed" \
+              --threads "$(nproc)"
+            cp "$output/python_native_listen.wav" "$SAMPLES_DIR/$filename"
+          }
+
+          generate_sample \
+            01_customs_tariff_rejection.wav \
+            '税関関税許可局、関税許可を急遽却下' \
+            2026081601 \
+            ja
+          generate_sample \
+            02_webassembly_vibe_coding.wav \
+            'WebAssemblyをLLMでVibe Coding中' \
+            2026081602 \
+            ja
+          generate_sample \
+            03_found_me_waiting.wav \
+            'えへへ、見つけてくれたんだ！ずっとここで待ってたんだよ？' \
+            2026081603 \
+            ja
+          generate_sample \
+            04_found_me_waiting_English.wav \
+            "Hey, you finally made it! How does it feel, looking back at everything we've been through?" \
+            2026081604 \
+            en
+
+          file "$SAMPLES_DIR"/*.wav
+          (cd "$SAMPLES_DIR" && sha256sum *.wav > SAMPLES_SHA256SUMS && sha256sum --check SAMPLES_SHA256SUMS)
+
       - name: Final release safety gate
         run: |
           if find "$RELEASE_DIR" -maxdepth 1 -type f -name '*.safetensors' -print -quit | grep -q .; then
@@ -128,6 +177,7 @@ jobs:
         run: |
           python scripts/upload_huggingface.py publish \
             --release-dir "$RELEASE_DIR" \
+            --samples-dir "$SAMPLES_DIR" \
             --repo-id "$HF_REPO_ID" \
             --revision "$HF_REVISION" \
             --github-sha "$GITHUB_SHA" \
@@ -136,7 +186,7 @@ jobs:
       - name: Update latest FP32 runtime release
         uses: ncipollo/release-action@v1.21.0
         with:
-          artifacts: ${{ github.workspace }}/dist/*
+          artifacts: ${{ github.workspace }}/dist/*,${{ github.workspace }}/samples/*
           artifactErrorsFailBuild: true
           bodyFile: ${{ github.workspace }}/dist/RELEASE_NOTES.md
           makeLatest: true

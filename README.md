@@ -56,6 +56,38 @@ Hugging Face側のModel Card metadataは `base_model: kizuna-intelligence/tsukuy
 
 Workflowにはrepository secret **`HF_TOKEN`** が必須です。Hugging FaceのFine-grained Access Tokenの `CI/CD` presetを使用し、token値をリポジトリへcommitしないでください。元の2.45 GB voice checkpointやHiggs source checkpointはHugging Face mirrorにもアップロードしません。
 
+## Audio Samples
+
+以下のWAVは、各Release workflowで変換・検証が完了したFP32 ONNX runtimeを使い、GitHub ActionsのCPU runner上でnative Python + ONNX Runtimeによりオフライン生成します。下のplayerは生成済みWAVを再生するだけで、ブラウザ内でモデル推論は行いません。
+
+### Japanese
+
+Text: `税関関税許可局、関税許可を急遽却下`
+
+<audio controls src="https://huggingface.co/RabbitDaisuke/tsukuyomichan-omnivoice-full-finetune-onnx/resolve/main/samples/01_customs_tariff_rejection.wav"></audio>
+
+Direct file: [samples/01_customs_tariff_rejection.wav](https://huggingface.co/RabbitDaisuke/tsukuyomichan-omnivoice-full-finetune-onnx/resolve/main/samples/01_customs_tariff_rejection.wav)
+
+Text: `WebAssemblyをLLMでVibe Coding中`
+
+<audio controls src="https://huggingface.co/RabbitDaisuke/tsukuyomichan-omnivoice-full-finetune-onnx/resolve/main/samples/02_webassembly_vibe_coding.wav"></audio>
+
+Direct file: [samples/02_webassembly_vibe_coding.wav](https://huggingface.co/RabbitDaisuke/tsukuyomichan-omnivoice-full-finetune-onnx/resolve/main/samples/02_webassembly_vibe_coding.wav)
+
+Text: `えへへ、見つけてくれたんだ！ずっとここで待ってたんだよ？`
+
+<audio controls src="https://huggingface.co/RabbitDaisuke/tsukuyomichan-omnivoice-full-finetune-onnx/resolve/main/samples/03_found_me_waiting.wav"></audio>
+
+Direct file: [samples/03_found_me_waiting.wav](https://huggingface.co/RabbitDaisuke/tsukuyomichan-omnivoice-full-finetune-onnx/resolve/main/samples/03_found_me_waiting.wav)
+
+### English
+
+Text: `Hey, you finally made it! How does it feel, looking back at everything we've been through?`
+
+<audio controls src="https://huggingface.co/RabbitDaisuke/tsukuyomichan-omnivoice-full-finetune-onnx/resolve/main/samples/04_found_me_waiting_English.wav"></audio>
+
+Direct file: [samples/04_found_me_waiting_English.wav](https://huggingface.co/RabbitDaisuke/tsukuyomichan-omnivoice-full-finetune-onnx/resolve/main/samples/04_found_me_waiting_English.wav)
+
 ## Source pins
 
 - Voice: `kizuna-intelligence/tsukuyomichan-omnivoice-full-finetune` @ `c1d7ff9477d0b21f220c58070da63355f69607e9`

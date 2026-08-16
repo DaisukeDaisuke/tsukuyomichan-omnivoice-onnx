@@ -30,7 +30,7 @@ from finalize_release import (
     resolve_llm_runtime_dimensions,
     verify_source_runtime_files,
 )
-from upload_huggingface import BASE_MODEL, DEFAULT_HF_REPO_ID, build_model_card
+from upload_huggingface import BASE_MODEL, DEFAULT_HF_REPO_ID, SAMPLE_SPECS, build_model_card
 
 
 def test_required_model_apis_import() -> None:
@@ -52,6 +52,7 @@ def test_required_model_apis_import() -> None:
     upload_parameters = inspect.signature(HfApi.upload_folder).parameters
     tag_parameters = inspect.signature(HfApi.create_tag).parameters
     assert "delete_patterns" in upload_parameters
+    assert "path_in_repo" in upload_parameters
     assert "exist_ok" in tag_parameters
 
 def test_modern_torch_onnx_export(root: Path) -> None:
@@ -167,6 +168,18 @@ def test_huggingface_distribution_and_model_card(root: Path) -> None:
     assert "他者に対して二次利用（素材としての利用）を許可する形で公開すること。" in card
     assert "### 改変・再配布について" in card
     assert "派生ソフトや再配布されたデータにもコピーレフトされます。" in card
+    assert "## Audio Samples" in card
+    assert "native Python + ONNX Runtime" in card
+    assert "### Japanese" in card
+    assert "### English" in card
+    assert "ChatGPT GPT-5.6 Sol high" in card
+    assert "https://github.com/DaisukeDaisuke/tsukuyomichan-omnivoice-onnx" in card
+    assert "reproducible numerical checks" in card
+    assert "samples/SAMPLES_SHA256SUMS" in card
+    for filename, text in SAMPLE_SPECS:
+        assert text in card
+        assert f"/resolve/main/samples/{filename}" in card
+        assert f"[samples/{filename}](./samples/{filename})" in card
 
 
 def test_source_runtime_files_cannot_be_clobbered(root: Path) -> None:
