@@ -118,8 +118,10 @@ the model in the browser.
 
 ## Integrity
 
-Use `runtime-manifest.json` for runtime asset sizes and SHA-256 values and `SHA256SUMS` for the runtime
-Release file set. Generated audio samples have their own `samples/SAMPLES_SHA256SUMS`. The GitHub Release
+Use `runtime-manifest.json` for runtime asset sizes, SHA-256 audit values, and XXH3-128 browser integrity
+values, and `SHA256SUMS` for the runtime Release file set. Browser clients intentionally use XXH3-128 for
+both first-download and reload validation to avoid multi-GiB client-side SHA-256 work, while SHA-256 is
+retained for CI and offline release auditing. Generated audio samples have their own `samples/SAMPLES_SHA256SUMS`. The GitHub Release
 remains the audit/release archive; this Hugging Face repository is the CORS/Range-friendly browser
 distribution mirror of the same verified files.
 

@@ -8,3 +8,4 @@ onnxscript==0.7.1
 onnxruntime==1.23.2
 numpy==1.26.4
 safetensors==0.6.2
+xxhash==4.0.0

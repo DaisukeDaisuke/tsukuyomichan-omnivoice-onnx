@@ -27,6 +27,7 @@ from finalize_release import (
     REQUIRED_MODELS,
     build_distribution,
     check_release_files,
+    release_asset,
     resolve_llm_runtime_dimensions,
     verify_source_runtime_files,
 )
@@ -176,10 +177,21 @@ def test_huggingface_distribution_and_model_card(root: Path) -> None:
     assert "https://github.com/DaisukeDaisuke/tsukuyomichan-omnivoice-onnx" in card
     assert "reproducible numerical checks" in card
     assert "samples/SAMPLES_SHA256SUMS" in card
+    assert "XXH3-128" in card
+    assert "first-download and reload validation" in card
     for filename, text in SAMPLE_SPECS:
         assert text in card
         assert f"/resolve/main/samples/{filename}" in card
         assert f"[samples/{filename}](./samples/{filename})" in card
+
+
+def test_release_asset_has_sha256_and_xxh3_128(root: Path) -> None:
+    path = root / "hash-contract.bin"
+    path.write_bytes(b"typed-voice-fast-cache-check")
+    asset = release_asset(path, "runtime")
+    assert asset["sha256"] == hashlib.sha256(path.read_bytes()).hexdigest()
+    assert len(asset["xxh3_128"]) == 32
+    assert all(char in "0123456789abcdef" for char in asset["xxh3_128"])
 
 
 def test_source_runtime_files_cannot_be_clobbered(root: Path) -> None:

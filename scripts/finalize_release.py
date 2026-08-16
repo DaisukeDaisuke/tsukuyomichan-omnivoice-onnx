@@ -8,6 +8,7 @@ import json
 from pathlib import Path
 
 import onnx
+import xxhash
 from onnx import TensorProto
 
 REQUIRED_MODELS = (
@@ -69,6 +70,14 @@ def sha256_file(path: Path, chunk_size: int = 8 * 1024 * 1024) -> str:
     return digest.hexdigest()
 
 
+def xxh3_128_file(path: Path, chunk_size: int = 8 * 1024 * 1024) -> str:
+    digest = xxhash.xxh3_128()
+    with path.open("rb") as stream:
+        while chunk := stream.read(chunk_size):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def external_locations(model_path: Path) -> list[str]:
     model = onnx.load(str(model_path), load_external_data=False)
     locations: set[str] = set()
@@ -96,6 +105,7 @@ def release_asset(path: Path, role: str) -> dict:
         "localPath": path.name,
         "byteSize": path.stat().st_size,
         "sha256": sha256_file(path),
+        "xxh3_128": xxh3_128_file(path),
     }
 
 

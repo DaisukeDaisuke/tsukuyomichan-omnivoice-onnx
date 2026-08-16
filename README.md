@@ -52,6 +52,8 @@ Workflowには `actions/upload-artifact` と `actions/cache` を使用してい�
 
 GitHub Releaseは監査・Releaseアーカイブとして維持します。同じ検証済みruntime assetを、ブラウザからCORS/Range取得するためのmirrorとして `RabbitDaisuke/tsukuyomichan-omnivoice-full-finetune-onnx` にもGitHub Actionsからアップロードします。
 
+`runtime-manifest.json` は各runtime assetについて SHA-256 に加えて XXH3-128 も記録します。SHA-256はCI/Release監査用に維持しますが、iPadを含むブラウザruntimeはmulti-GB assetにSHA-256を計算せず、初回取得・再ロードともXXH3-128で検証します。これはブラウザ側の改ざん検出を非暗号学的ハッシュへ弱める意図的な性能上のトレードオフです。配布元はimmutable Hugging Face revisionへ固定します。
+
 Hugging Face側のModel Card metadataは `base_model: kizuna-intelligence/tsukuyomichan-omnivoice-full-finetune` とし、変換モデルの親をfull-finetune checkpointへ直接結びます。各Workflow runは `gh-<GitHub SHA>-<GitHub run ID>` というbuild固有tagを作り、`runtime-manifest.json`にもその固定revisionを記録します。ブラウザruntimeはmutableな `main` ではなく、このbuild固有revisionとasset SHA-256を使用できます。
 
 Workflowにはrepository secret **`HF_TOKEN`** が必須です。Hugging FaceのFine-grained Access Tokenの `CI/CD` presetを使用し、token値をリポジトリへcommitしないでください。元の2.45 GB voice checkpointやHiggs source checkpointはHugging Face mirrorにもアップロードしません。
