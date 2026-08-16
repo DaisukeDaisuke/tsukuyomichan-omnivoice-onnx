@@ -395,7 +395,6 @@ def save_backbone(source_dir: Path, work: Path, release: Path) -> None:
         "filename=llm_decoder.onnx",
         "exclude_embeds=true",
         "exclude_lm_head=true",
-        "include_hidden_states=true",
         "shared_embeddings=false",
     ]
     print("Running:", " ".join(command))
