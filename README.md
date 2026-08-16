@@ -1,10 +1,17 @@
 # tsukuyomichan-omnivoice-onnx
 
-`kizuna-intelligence/tsukuyomichan-omnivoice-full-finetune` を、ブラウザ/ONNX Runtime向けのsplit ONNXへ**非量子化FP32のまま**変換し、GitHub ReleaseとHugging Face mirrorへ公開するための変換専用リポジトリです。
+`kizuna-intelligence/tsukuyomichan-omnivoice-full-finetune` を、ブラウザ/ONNX Runtime向けのsplit ONNXへ変換し、FP32品質baselineとMobile INT8 weight-only版をGitHub Release / Hugging Face mirrorへ公開するための変換専用リポジトリです。
+
+| 配布profile | Hugging Face直リンク | GitHub Release | 量子化 |
+| --- | --- | --- | --- |
+| Mobile INT8 | [mobile-int8](https://huggingface.co/RabbitDaisuke/tsukuyomichan-omnivoice-full-finetune-onnx/tree/mobile-int8) | `mobile-int8-latest` | LLMの定数MatMul weightのみ8-bit。activation / audio embeddings / audio heads / Higgs decoderはFP32 |
+| FP32 baseline | [main](https://huggingface.co/RabbitDaisuke/tsukuyomichan-omnivoice-full-finetune-onnx/tree/main) | `full-finetune-latest` | なし |
+
+Mobile INT8は実試聴で実用上ほぼ劣化なしと確認済みです。わずかに音の豊かさが減った可能性はありますが、試聴上の差は小さく、ブラウザ向けの標準候補として扱います。
 
 ## 変換方針
 
-GitHub Actionsの `Convert full-finetune to FP32 ONNX` を `workflow_dispatch` するたびに、固定revisionのfull-finetuneをrunnerへ取得し、次のruntimeへ変換します。
+GitHub Actionsの `Convert full-finetune ONNX profiles` は `main` へのpush時に、固定revisionのfull-finetuneをrunnerへ取得して **FP32とMobile INT8をどちらも無条件でbuild** します。手動の `workflow_dispatch` でも同じ2 profileをbuildします。
 
 ```text
 audio_embeddings_encoder.onnx
@@ -18,7 +25,7 @@ higgs_decoder.onnx
 24 kHz waveform
 ```
 
-変換ではINT4、INT8、GPTQ、FP16、BF16を使用しません。LLM、audio embedding/head、Higgs decoderはいずれもFP32です。Release前にONNX graphを検査し、量子化operatorまたは低精度weight initializerが1個でも存在した場合はWorkflowを失敗させます。また、exportしたcomponentはPyTorch出力とONNX Runtime出力を数値比較してからReleaseへ進みます。
+FP32 profileはLLM、audio embedding/head、Higgs decoderをすべてFP32で維持し、量子化operatorまたは低精度weight initializerが1個でも存在した場合はRelease gateで拒否します。Mobile INT8 profileは、この検証済みFP32 graphから `llm_decoder.onnx` の定数 `MatMul` weightだけを8-bit `com.microsoft::MatMulNBits`へ変換します。activation、audio embeddings、audio heads、Higgs decoderはFP32のままです。量子化前後のgolden比較とgraph contract検査を通過したものだけをReleaseします。
 
 OmniVoiceのiterative unmaskingはautoregressive causal decodingではありません。LLM backboneは元実装と同じ`[batch, 1, sequence, sequence]`の4次元Boolean attention maskを受ける形で直接ONNX exportし、KV cacheは使用しません。conditional sequenceは全位置を相互参照し、unconditional sequenceも実target区間を全結合にします。2次元padding/causal maskへ変換されたLLMはRelease gateで拒否します。
 
@@ -32,7 +39,7 @@ Workflowには `actions/upload-artifact` と `actions/cache` を使用してい�
 
 ## Release
 
-`workflow_dispatch` 成功時に `full-finetune-latest` Releaseを更新します。Release assetは1ファイル1.8 GB以下へ制限し、大きなONNX external dataはtensor境界を保ったまま複数ファイルへ分割します。
+`main` pushまたは `workflow_dispatch` 成功時に、FP32は `full-finetune-latest`、Mobile INT8は `mobile-int8-latest` Releaseをそれぞれ更新します。Release assetは1ファイル1.8 GB以下へ制限し、大きなONNX external dataはtensor境界を保ったまま複数ファイルへ分割します。
 
 主な配布物:
 
@@ -54,41 +61,53 @@ GitHub Releaseは監査・Releaseアーカイブとして維持します。同�
 
 `runtime-manifest.json` は各runtime assetについて SHA-256 に加えて XXH3-128 も記録します。SHA-256はCI/Release監査用に維持しますが、iPadを含むブラウザruntimeはmulti-GB assetにSHA-256を計算せず、初回取得・再ロードともXXH3-128で検証します。これはブラウザ側の改ざん検出を非暗号学的ハッシュへ弱める意図的な性能上のトレードオフです。配布元はimmutable Hugging Face revisionへ固定します。
 
-Hugging Face側のModel Card metadataは `base_model: kizuna-intelligence/tsukuyomichan-omnivoice-full-finetune` とし、変換モデルの親をfull-finetune checkpointへ直接結びます。各Workflow runは `gh-<GitHub SHA>-<GitHub run ID>` というbuild固有tagを作り、`runtime-manifest.json`にもその固定revisionを記録します。ブラウザruntimeはmutableな `main` ではなく、このbuild固有revisionとasset SHA-256を使用できます。
+Hugging Face側のModel Card metadataは `base_model: kizuna-intelligence/tsukuyomichan-omnivoice-full-finetune` とし、変換モデルの親をfull-finetune checkpointへ直接結びます。FP32はHugging Face `main`、Mobile INT8は `mobile-int8` branchへ公開し、各buildは `gh-<GitHub SHA>-<GitHub run ID>-<profile>` というbuild固有tagも作ります。`runtime-manifest.json`にもその固定revisionを記録するため、ブラウザruntimeはmutable branchではなくbuild固有revisionへ固定できます。
 
 Workflowにはrepository secret **`HF_TOKEN`** が必須です。Hugging FaceのFine-grained Access Tokenの `CI/CD` presetを使用し、token値をリポジトリへcommitしないでください。元の2.45 GB voice checkpointやHiggs source checkpointはHugging Face mirrorにもアップロードしません。
 
 ## Audio Samples
 
-以下のWAVは、各Release workflowで変換・検証が完了したFP32 ONNX runtimeを使い、GitHub ActionsのCPU runner上でnative Python + ONNX Runtimeによりオフライン生成します。下のplayerは生成済みWAVを再生するだけで、ブラウザ内でモデル推論は行いません。
+以下のWAVは、各profileのRelease workflowで変換・検証が完了したruntimeを使い、GitHub ActionsのCPU runner上でnative Python + ONNX Runtimeにより**同一文章・同一seed**でオフライン生成します。下のplayerは生成済みWAVを再生するだけで、ブラウザ内でモデル推論は行いません。FP32とMobile INT8をそのまま聞き比べられます。
 
-### Japanese
+### Japanese: 税関関税許可局
 
 Text: `税関関税許可局、関税許可を急遽却下`
 
+FP32:
 <audio controls src="https://huggingface.co/RabbitDaisuke/tsukuyomichan-omnivoice-full-finetune-onnx/resolve/main/samples/01_customs_tariff_rejection.wav"></audio>
 
-Direct file: [samples/01_customs_tariff_rejection.wav](https://huggingface.co/RabbitDaisuke/tsukuyomichan-omnivoice-full-finetune-onnx/resolve/main/samples/01_customs_tariff_rejection.wav)
+Mobile INT8:
+<audio controls src="https://huggingface.co/RabbitDaisuke/tsukuyomichan-omnivoice-full-finetune-onnx/resolve/mobile-int8/samples/01_customs_tariff_rejection.wav"></audio>
+
+### Japanese: WebAssembly
 
 Text: `WebAssemblyをLLMでVibe Coding中`
 
+FP32:
 <audio controls src="https://huggingface.co/RabbitDaisuke/tsukuyomichan-omnivoice-full-finetune-onnx/resolve/main/samples/02_webassembly_vibe_coding.wav"></audio>
 
-Direct file: [samples/02_webassembly_vibe_coding.wav](https://huggingface.co/RabbitDaisuke/tsukuyomichan-omnivoice-full-finetune-onnx/resolve/main/samples/02_webassembly_vibe_coding.wav)
+Mobile INT8:
+<audio controls src="https://huggingface.co/RabbitDaisuke/tsukuyomichan-omnivoice-full-finetune-onnx/resolve/mobile-int8/samples/02_webassembly_vibe_coding.wav"></audio>
+
+### Japanese: えへへ、見つけてくれたんだ！
 
 Text: `えへへ、見つけてくれたんだ！ずっとここで待ってたんだよ？`
 
+FP32:
 <audio controls src="https://huggingface.co/RabbitDaisuke/tsukuyomichan-omnivoice-full-finetune-onnx/resolve/main/samples/03_found_me_waiting.wav"></audio>
 
-Direct file: [samples/03_found_me_waiting.wav](https://huggingface.co/RabbitDaisuke/tsukuyomichan-omnivoice-full-finetune-onnx/resolve/main/samples/03_found_me_waiting.wav)
+Mobile INT8:
+<audio controls src="https://huggingface.co/RabbitDaisuke/tsukuyomichan-omnivoice-full-finetune-onnx/resolve/mobile-int8/samples/03_found_me_waiting.wav"></audio>
 
 ### English
 
 Text: `Hey, you finally made it! How does it feel, looking back at everything we've been through?`
 
+FP32:
 <audio controls src="https://huggingface.co/RabbitDaisuke/tsukuyomichan-omnivoice-full-finetune-onnx/resolve/main/samples/04_found_me_waiting_English.wav"></audio>
 
-Direct file: [samples/04_found_me_waiting_English.wav](https://huggingface.co/RabbitDaisuke/tsukuyomichan-omnivoice-full-finetune-onnx/resolve/main/samples/04_found_me_waiting_English.wav)
+Mobile INT8:
+<audio controls src="https://huggingface.co/RabbitDaisuke/tsukuyomichan-omnivoice-full-finetune-onnx/resolve/mobile-int8/samples/04_found_me_waiting_English.wav"></audio>
 
 # Download and try your computer!
 
@@ -138,4 +157,4 @@ Built with Meta Llama 3.
 
 ## 手動実行
 
-GitHubの `Actions` → `Convert full-finetune to FP32 ONNX` → `Run workflow` から実行します。正常終了したrunだけが `full-finetune-latest` の既存assetを置き換えます。
+通常は `main` へのpushでFP32 / Mobile INT8の両profileを自動buildします。手動実行する場合はGitHubの `Actions` → `Convert full-finetune ONNX profiles` → `Run workflow` を使用します。正常終了したprofileだけが対応する `full-finetune-latest` / `mobile-int8-latest` の既存assetとHugging Face branchを更新します。

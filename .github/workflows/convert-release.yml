@@ -1,35 +1,62 @@
-name: Convert full-finetune to FP32 ONNX
+name: Convert full-finetune ONNX profiles
 
 "on":
+  push:
+    branches:
+      - main
   workflow_dispatch:
 
 permissions:
   contents: write
 
 concurrency:
-  group: tsukuyomichan-full-finetune-fp32-release
+  group: tsukuyomichan-full-finetune-onnx-release
   cancel-in-progress: false
 
 jobs:
   convert-and-release:
     runs-on: ubuntu-24.04
     timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - profile: fp32
+            hf_branch: main
+            release_tag: full-finetune-latest
+            release_name: Higgs Audio 2 Tsukuyomichan OmniVoice ONNX FP32
+            make_latest: true
+          - profile: mobile-int8
+            hf_branch: mobile-int8
+            release_tag: mobile-int8-latest
+            release_name: Higgs Audio 2 Tsukuyomichan OmniVoice Mobile INT8
+            make_latest: false
     env:
       PYTHONUNBUFFERED: "1"
       HF_REPO_ID: RabbitDaisuke/tsukuyomichan-omnivoice-full-finetune-onnx
+      BUILD_PROFILE: ${{ matrix.profile }}
+      HF_BRANCH: ${{ matrix.hf_branch }}
     steps:
       - name: Set runner-local build paths
         shell: bash
         run: |
-          build_root="$RUNNER_TEMP/tsukuyomichan-omnivoice-onnx-$GITHUB_RUN_ID"
+          build_root="$RUNNER_TEMP/tsukuyomichan-omnivoice-onnx-$GITHUB_RUN_ID-$BUILD_PROFILE"
           printf 'BUILD_ROOT=%s\n' "$build_root" >> "$GITHUB_ENV"
           printf 'HF_HOME=%s\n' "$build_root/hf-home" >> "$GITHUB_ENV"
           printf 'RELEASE_DIR=%s\n' "$GITHUB_WORKSPACE/dist" >> "$GITHUB_ENV"
           printf 'SAMPLES_DIR=%s\n' "$GITHUB_WORKSPACE/samples" >> "$GITHUB_ENV"
-          printf 'HF_REVISION=gh-%s-%s\n' "$GITHUB_SHA" "$GITHUB_RUN_ID" >> "$GITHUB_ENV"
+          printf 'HF_REVISION=gh-%s-%s-%s\n' "$GITHUB_SHA" "$GITHUB_RUN_ID" "$BUILD_PROFILE" >> "$GITHUB_ENV"
 
       - name: Checkout converter
         uses: actions/checkout@v5
+
+      - name: Refuse GitHub Actions cache and artifact storage for model builds
+        shell: bash
+        run: |
+          if grep -R -nE 'uses:[[:space:]]*actions/(cache|upload-artifact)@' .github/workflows; then
+            echo "Model builds must never use GitHub Actions cache or upload-artifact storage." >&2
+            exit 1
+          fi
 
       - name: Require Hugging Face CI token
         env:
@@ -57,7 +84,7 @@ jobs:
       - name: Verify Hugging Face token and mirror repository
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
-        run: python scripts/upload_huggingface.py prepare --repo-id "$HF_REPO_ID"
+        run: python scripts/upload_huggingface.py prepare --repo-id "$HF_REPO_ID" --branch "$HF_BRANCH"
 
       - name: Prepare runner-local build directories
         run: |
@@ -71,6 +98,13 @@ jobs:
         run: |
           python scripts/export_fp32.py backbone \
             --source-dir "$BUILD_ROOT/full-finetune" \
+            --work-dir "$BUILD_ROOT" \
+            --release-dir "$RELEASE_DIR"
+
+      - name: Quantize LLM weights for mobile INT8 profile
+        if: matrix.profile == 'mobile-int8'
+        run: |
+          python scripts/quantize_mobile_int8.py \
             --work-dir "$BUILD_ROOT" \
             --release-dir "$RELEASE_DIR"
 
@@ -105,7 +139,8 @@ jobs:
           python scripts/finalize_release.py \
             --work-dir "$BUILD_ROOT" \
             --release-dir "$RELEASE_DIR" \
-            --hf-revision "$HF_REVISION"
+            --hf-revision "$HF_REVISION" \
+            --profile "$BUILD_PROFILE"
 
       - name: Generate native CPU audio samples
         shell: bash
@@ -179,19 +214,20 @@ jobs:
             --release-dir "$RELEASE_DIR" \
             --samples-dir "$SAMPLES_DIR" \
             --repo-id "$HF_REPO_ID" \
+            --branch "$HF_BRANCH" \
             --revision "$HF_REVISION" \
             --github-sha "$GITHUB_SHA" \
             --github-run-number "$GITHUB_RUN_NUMBER"
 
-      - name: Update latest FP32 runtime release
+      - name: Update latest runtime release for profile
         uses: ncipollo/release-action@v1.21.0
         with:
           artifacts: ${{ github.workspace }}/dist/*,${{ github.workspace }}/samples/*
           artifactErrorsFailBuild: true
           bodyFile: ${{ github.workspace }}/dist/RELEASE_NOTES.md
-          makeLatest: true
-          name: Higgs Audio 2 Tsukuyomichan OmniVoice ONNX FP32 - Latest (Build ${{ github.run_number }})
-          tag: full-finetune-latest
+          makeLatest: ${{ matrix.make_latest }}
+          name: ${{ matrix.release_name }} - Latest (Build ${{ github.run_number }})
+          tag: ${{ matrix.release_tag }}
           commit: ${{ github.sha }}
           allowUpdates: true
           removeArtifacts: true

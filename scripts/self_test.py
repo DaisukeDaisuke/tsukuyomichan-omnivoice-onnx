@@ -26,11 +26,13 @@ from finalize_release import (
     REQUIRED_FILES,
     REQUIRED_MODELS,
     build_distribution,
+    build_typed_voice_manifest,
     check_release_files,
     release_asset,
     resolve_llm_runtime_dimensions,
     verify_source_runtime_files,
 )
+from quantize_mobile_int8 import quantize_llm, validate_mobile_graph, verify_equivalence
 from upload_huggingface import BASE_MODEL, DEFAULT_HF_REPO_ID, SAMPLE_SPECS, build_model_card
 
 
@@ -50,10 +52,14 @@ def test_required_model_apis_import() -> None:
     assert callable(getattr(HiggsAudioV2TokenizerModel, "from_pretrained", None))
     assert callable(getattr(HfApi, "whoami", None))
     assert callable(getattr(HfApi, "create_repo", None))
+    assert callable(getattr(HfApi, "create_branch", None))
     upload_parameters = inspect.signature(HfApi.upload_folder).parameters
+    branch_parameters = inspect.signature(HfApi.create_branch).parameters
     tag_parameters = inspect.signature(HfApi.create_tag).parameters
     assert "delete_patterns" in upload_parameters
     assert "path_in_repo" in upload_parameters
+    assert "revision" in upload_parameters
+    assert "exist_ok" in branch_parameters
     assert "exist_ok" in tag_parameters
 
 def test_modern_torch_onnx_export(root: Path) -> None:
@@ -183,10 +189,12 @@ def test_huggingface_distribution_and_model_card(root: Path) -> None:
     assert "samples/SAMPLES_SHA256SUMS" in card
     assert "XXH3-128" in card
     assert "first-download and reload validation" in card
+    assert f"https://huggingface.co/{DEFAULT_HF_REPO_ID}/tree/mobile-int8" in card
+    assert f"https://huggingface.co/{DEFAULT_HF_REPO_ID}/tree/main" in card
     for filename, text in SAMPLE_SPECS:
         assert text in card
         assert f"/resolve/main/samples/{filename}" in card
-        assert f"[samples/{filename}](./samples/{filename})" in card
+        assert f"/resolve/mobile-int8/samples/{filename}" in card
 
 
 def test_release_asset_has_sha256_and_xxh3_128(root: Path) -> None:
@@ -304,6 +312,77 @@ def test_quantized_graph_rejected(root: Path) -> None:
         raise AssertionError("Quantized ONNX graph was not rejected")
 
 
+def test_mobile_int8_quantizer_preserves_llm_contract(root: Path) -> None:
+    source = root / "tiny-mobile-source.onnx"
+    output = root / "tiny-mobile-output.onnx"
+    weight = np.linspace(-0.95, 0.95, 128 * 8, dtype=np.float32).reshape(128, 8)
+    graph = helper.make_graph(
+        [helper.make_node("MatMul", ["inputs_embeds", "weight"], ["hidden_states"], name="tiny-matmul")],
+        "mobile-int8-contract-test",
+        [
+            helper.make_tensor_value_info("inputs_embeds", TensorProto.FLOAT, ["batch", "seq", 128]),
+            helper.make_tensor_value_info("attention_mask", TensorProto.BOOL, ["batch", 1, "seq", "seq"]),
+        ],
+        [helper.make_tensor_value_info("hidden_states", TensorProto.FLOAT, ["batch", "seq", 8])],
+        [numpy_helper.from_array(weight, name="weight")],
+    )
+    onnx.save_model(helper.make_model(graph, opset_imports=[helper.make_opsetid("", 18)]), str(source))
+
+    primary = np.arange(2 * 3 * 128, dtype=np.float32).reshape(2, 3, 128) / 1000.0
+    alternate = (np.arange(2 * 128, dtype=np.float32).reshape(1, 2, 128) - 128.0) / 700.0
+    case = root / "tiny-mobile-equivalence.npz"
+    np.savez(
+        case,
+        inputs_embeds=primary,
+        attention_mask=np.ones((2, 1, 3, 3), dtype=np.bool_),
+        expected=primary @ weight,
+        alt_inputs_embeds=alternate,
+        alt_attention_mask=np.ones((1, 1, 2, 2), dtype=np.bool_),
+        alt_expected=alternate @ weight,
+    )
+
+    quantize_llm(source, output)
+    assert validate_mobile_graph(output) == 1
+    metrics = verify_equivalence(output, case)
+    assert metrics["primary"]["cosine"] >= 0.995
+    assert metrics["alternate"]["cosine"] >= 0.995
+
+
+def test_typed_voice_manifest_uses_immutable_mobile_assets() -> None:
+    revision = "gh-0123456789abcdef-123-mobile-int8"
+    runtime_manifest = {
+        "id": "mobile-test",
+        "displayName": "Mobile Test",
+        "qualityProfile": "mobile-int8-weight-only",
+        "quantized": True,
+        "source": {
+            "voiceCheckpoint": {
+                "repo": "kizuna-intelligence/tsukuyomichan-omnivoice-full-finetune",
+                "revision": "voice-revision",
+                "modelSha256": "a" * 64,
+                "modelByteSize": 123,
+            }
+        },
+        "runtime": {"sampleRate": 24000, "sessions": {}},
+        "assets": [
+            {
+                "id": "llm_decoder.onnx",
+                "role": "runtime",
+                "localPath": "llm_decoder.onnx",
+                "byteSize": 456,
+                "sha256": "b" * 64,
+                "xxh3_128": "c" * 32,
+            }
+        ],
+    }
+    manifest = build_typed_voice_manifest(runtime_manifest, revision)
+    assert manifest["schemaVersion"] == 2
+    assert manifest["conversion"]["quantized"] is True
+    assert manifest["runtimeSource"]["revision"] == revision
+    assert manifest["assets"][0]["source"]["revision"] == revision
+    assert manifest["assets"][0]["source"]["path"] == "llm_decoder.onnx"
+
+
 def save_empty_model(path: Path) -> None:
     graph = helper.make_graph([], path.stem, [], [])
     onnx.save_model(helper.make_model(graph, opset_imports=[helper.make_opsetid("", 18)]), str(path))
@@ -337,7 +416,9 @@ def main() -> None:
         test_pinned_license_fetches(root)
         test_external_data_split(root)
         test_quantized_graph_rejected(root)
+        test_mobile_int8_quantizer_preserves_llm_contract(root)
         test_release_rejects_safetensors(root)
+    test_typed_voice_manifest_uses_immutable_mobile_assets()
     print("converter behavioral safety tests: PASS")
 
 

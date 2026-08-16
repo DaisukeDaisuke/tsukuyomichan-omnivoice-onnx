@@ -34,25 +34,56 @@ def api_from_environment(repo_id: str) -> HfApi:
     return api
 
 
-def prepare_repo(repo_id: str) -> None:
+def prepare_repo(repo_id: str, branch: str = "main") -> None:
     api = api_from_environment(repo_id)
     api.create_repo(repo_id=repo_id, repo_type="model", private=False, exist_ok=True)
-    print(f"Hugging Face mirror repository is writable: {repo_id}")
+    if branch != "main":
+        api.create_branch(repo_id=repo_id, repo_type="model", branch=branch, exist_ok=True)
+    print(f"Hugging Face mirror repository is writable: {repo_id} @ {branch}")
 
 
-def build_model_card(release: Path, revision: str, github_sha: str, github_run_number: str) -> str:
+def build_model_card(
+    release: Path,
+    revision: str,
+    github_sha: str,
+    github_run_number: str,
+    *,
+    repo_id: str = DEFAULT_HF_REPO_ID,
+    branch: str = "main",
+) -> str:
     manifest = json.loads((release / "runtime-manifest.json").read_text(encoding="utf-8"))
     voice = manifest["source"]["voiceCheckpoint"]
     codec = manifest["source"]["audioCodec"]
+    is_mobile = manifest["qualityProfile"] == "mobile-int8-weight-only"
+    title = "Tsukuyomichan OmniVoice Mobile INT8" if is_mobile else "Tsukuyomichan OmniVoice Full Finetune ONNX FP32"
+    profile_summary = (
+        "This branch contains the **mobile 8-bit weight-only** runtime. Only the LLM's constant MatMul weights are quantized to `com.microsoft::MatMulNBits`; LLM activations, audio embeddings, audio heads, and the Higgs decoder remain FP32."
+        if is_mobile
+        else "This branch contains the **unquantized FP32** ONNX quality-baseline runtime."
+    )
+    conversion_summary = (
+        "The LLM keeps the validated rank-4 Boolean non-causal attention contract and no KV cache, then applies 8-bit weight-only `MatMulNBits` quantization as a post-export step. The release records FP32-golden equivalence metrics in `runtime-manifest.json`."
+        if is_mobile
+        else "The conversion workflow rejects INT4, INT8, GPTQ, FP16 and BF16 weights/operators and numerically compares exported components against their PyTorch outputs before publication. `llm_decoder` preserves OmniVoice's rank-4 Boolean non-causal attention mask and runs without KV cache; a 2-D causal/padding-mask LLM contract is rejected by the release gate."
+    )
+    storage_summary = (
+        "The mobile profile is intended to reduce the LLM weight footprint substantially versus the FP32 baseline; use `runtime-manifest.json` for the exact build size."
+        if is_mobile
+        else "The current FP32 runtime is about **2.4 GiB**, so the first preparation consumes more than 2 GB of network transfer and persistent local storage."
+    )
     def render_samples(specs) -> str:
         sample_blocks = []
         for filename, text in specs:
             sample_blocks.append(
             f"""Text: `{text}`
 
-<audio controls src="https://huggingface.co/{DEFAULT_HF_REPO_ID}/resolve/main/samples/{filename}"></audio>
+FP32:
+<audio controls src="https://huggingface.co/{repo_id}/resolve/main/samples/{filename}"></audio>
 
-Direct file: [samples/{filename}](./samples/{filename})"""
+Mobile INT8:
+<audio controls src="https://huggingface.co/{repo_id}/resolve/mobile-int8/samples/{filename}"></audio>
+
+Direct files: [FP32](https://huggingface.co/{repo_id}/resolve/main/samples/{filename}) / [Mobile INT8](https://huggingface.co/{repo_id}/resolve/mobile-int8/samples/{filename})"""
             )
         return "\n\n".join(sample_blocks)
 
@@ -71,10 +102,16 @@ tags:
 - tsukuyomichan
 ---
 
-# Tsukuyomichan OmniVoice Full Finetune ONNX FP32
+# {title}
 
-This repository is the browser/runtime mirror of the **unquantized FP32** ONNX conversion produced by
-`DaisukeDaisuke/tsukuyomichan-omnivoice-onnx`.
+| Distribution profile | Hugging Face | Quantization |
+| --- | --- | --- |
+| Mobile INT8 | [mobile-int8](https://huggingface.co/{repo_id}/tree/mobile-int8) | LLM constant MatMul weights: 8-bit; activations/audio/Higgs remain FP32 |
+| FP32 baseline | [main](https://huggingface.co/{repo_id}/tree/main) | None |
+
+{profile_summary}
+
+This repository/branch is a browser/runtime mirror produced by `DaisukeDaisuke/tsukuyomichan-omnivoice-onnx`.
 
 The converter is open source and its source code, release workflow, verification gates, and conversion
 scripts are available at:
@@ -97,10 +134,7 @@ runtime tests.
 - Quality profile: `{manifest['qualityProfile']}`
 
 The runtime is split into `audio_embeddings_encoder`, `llm_decoder`, `audio_heads_decoder`, and
-`higgs_decoder` ONNX graphs with external data. The conversion workflow rejects INT4, INT8, GPTQ,
-FP16 and BF16 weights/operators and numerically compares exported components against their PyTorch
-outputs before publication. `llm_decoder` preserves OmniVoice's rank-4 Boolean non-causal attention
-mask and runs without KV cache; a 2-D causal/padding-mask LLM contract is rejected by the release gate.
+`higgs_decoder` ONNX graphs with external data. {conversion_summary}
 
 # Download and try your computer!
 
@@ -109,8 +143,7 @@ You can run the browser PoC directly here:
 https://daisukedaisuke.github.io/typed-voice/poc.html
 
 The PoC downloads the converted runtime into persistent browser storage so it can be reused across
-reloads. The current FP32 runtime is about **2.4 GiB**, so the first preparation consumes more than
-2 GB of network transfer and persistent local storage. Make sure your connection and device have
+reloads. {storage_summary} Make sure your connection and device have
 enough capacity before starting the download. Clearing this site's stored data removes the persistent
 model cache when you want to reclaim the space.
 
@@ -123,7 +156,7 @@ Browsers without the required WebGPU path fall back to WebAssembly where support
 ## Audio Samples
 
 These WAV files are generated on the GitHub Actions CPU runner with native Python + ONNX Runtime from
-the finalized FP32 ONNX release artifacts. They are static sample files; the player below does not run
+the finalized `{manifest['qualityProfile']}` release artifacts. They are static sample files; the player below does not run
 the model in the browser.
 
 ### Japanese
@@ -230,6 +263,7 @@ def publish(
     revision: str,
     github_sha: str,
     github_run_number: str,
+    branch: str = "main",
 ) -> str:
     if not revision or revision in {"main", "master"}:
         raise RuntimeError("Hugging Face mirror revision must be build-specific")
@@ -239,16 +273,30 @@ def publish(
     readme = release / "README.md"
     if readme.exists():
         raise RuntimeError("README.md unexpectedly exists in the GitHub Release directory")
-    readme.write_text(build_model_card(release, revision, github_sha, github_run_number), encoding="utf-8")
+    readme.write_text(
+        build_model_card(
+            release,
+            revision,
+            github_sha,
+            github_run_number,
+            repo_id=repo_id,
+            branch=branch,
+        ),
+        encoding="utf-8",
+    )
 
     api = api_from_environment(repo_id)
     try:
         api.create_repo(repo_id=repo_id, repo_type="model", private=False, exist_ok=True)
+        if branch != "main":
+            api.create_branch(repo_id=repo_id, repo_type="model", branch=branch, exist_ok=True)
+        profile = manifest_profile(release)
         commit = api.upload_folder(
             repo_id=repo_id,
             repo_type="model",
             folder_path=str(release),
-            commit_message=f"Mirror verified FP32 runtime from GitHub Actions build {github_run_number}",
+            revision=branch,
+            commit_message=f"Mirror verified {profile} runtime from GitHub Actions build {github_run_number}",
             delete_patterns=["*"],
         )
         oid = getattr(commit, "oid", None)
@@ -259,6 +307,7 @@ def publish(
             repo_type="model",
             folder_path=str(samples),
             path_in_repo="samples",
+            revision=branch,
             commit_message=f"Add native CPU audio samples from GitHub Actions build {github_run_number}",
         )
         oid = getattr(sample_commit, "oid", None)
@@ -271,10 +320,15 @@ def publish(
             revision=oid,
             exist_ok=True,
         )
-        print(f"Hugging Face mirror published: {repo_id} @ {revision} ({oid})")
+        print(f"Hugging Face mirror published: {repo_id} branch={branch} tag={revision} ({oid})")
         return oid
     finally:
         readme.unlink(missing_ok=True)
+
+
+def manifest_profile(release: Path) -> str:
+    manifest = json.loads((release / "runtime-manifest.json").read_text(encoding="utf-8"))
+    return str(manifest.get("qualityProfile", "unknown"))
 
 
 def main() -> None:
@@ -282,6 +336,7 @@ def main() -> None:
     subparsers = parser.add_subparsers(dest="command", required=True)
     prepare_parser = subparsers.add_parser("prepare")
     prepare_parser.add_argument("--repo-id", default=DEFAULT_HF_REPO_ID)
+    prepare_parser.add_argument("--branch", default="main")
     publish_parser = subparsers.add_parser("publish")
     publish_parser.add_argument("--release-dir", required=True)
     publish_parser.add_argument("--samples-dir", required=True)
@@ -289,9 +344,10 @@ def main() -> None:
     publish_parser.add_argument("--revision", required=True)
     publish_parser.add_argument("--github-sha", required=True)
     publish_parser.add_argument("--github-run-number", required=True)
+    publish_parser.add_argument("--branch", default="main")
     args = parser.parse_args()
     if args.command == "prepare":
-        prepare_repo(args.repo_id)
+        prepare_repo(args.repo_id, args.branch)
         return
     publish(
         Path(args.release_dir).resolve(),
@@ -300,6 +356,7 @@ def main() -> None:
         args.revision,
         args.github_sha,
         args.github_run_number,
+        args.branch,
     )
 
 
