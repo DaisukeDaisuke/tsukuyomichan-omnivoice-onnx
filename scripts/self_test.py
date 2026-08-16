@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import tempfile
+import subprocess
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -18,10 +20,22 @@ def test_required_model_apis_import() -> None:
     # OmniVoice's own package for the model class; it is not a Transformers
     # top-level model export.
     from omnivoice import OmniVoice
+    import onnx_ir
     from transformers import HiggsAudioV2TokenizerModel
 
     assert callable(getattr(OmniVoice, "from_pretrained", None))
+    assert callable(getattr(onnx_ir, "load", None))
     assert callable(getattr(HiggsAudioV2TokenizerModel, "from_pretrained", None))
+
+    # The ORT GenAI wheel exposes the model builder as a Python module, but
+    # builder-only dependencies are not necessarily pulled in by the runtime
+    # wheel itself. Exercise the exact module entry point before downloading
+    # any multi-GB checkpoints so a missing builder dependency fails cheaply.
+    subprocess.run(
+        [sys.executable, "-m", "onnxruntime_genai.models.builder", "--help"],
+        check=True,
+        stdout=subprocess.DEVNULL,
+    )
 
 
 def save_two_weight_model(path: Path) -> tuple[np.ndarray, np.ndarray]:
