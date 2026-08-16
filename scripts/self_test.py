@@ -22,6 +22,11 @@ from export_fp32 import (
     validate_llm_attention_contract,
     validate_unquantized_graph,
 )
+from convert_fp16 import convert_llm as convert_llm_fp16
+from convert_fp16 import (
+    validate_fp16_llm_graph,
+    verify_equivalence as verify_fp16_equivalence,
+)
 from finalize_release import (
     REQUIRED_FILES,
     REQUIRED_MODELS,
@@ -353,6 +358,50 @@ def test_mobile_int8_quantizer_preserves_llm_contract(root: Path) -> None:
         assert metrics["alternate"]["cosine"] >= 0.995
 
 
+def test_fp16_converter_preserves_fp32_llm_io(root: Path) -> None:
+    source = root / "tiny-fp16-source.onnx"
+    weight = np.linspace(-0.95, 0.95, 128 * 8, dtype=np.float32).reshape(128, 8)
+    graph = helper.make_graph(
+        [
+            helper.make_node("Relu", ["inputs_embeds"], ["normalized"], name="tiny-fp32-op"),
+            helper.make_node("MatMul", ["normalized", "weight"], ["hidden_states"], name="tiny-matmul"),
+        ],
+        "fp16-contract-test",
+        [
+            helper.make_tensor_value_info("inputs_embeds", TensorProto.FLOAT, ["batch", "seq", 128]),
+            helper.make_tensor_value_info("attention_mask", TensorProto.BOOL, ["batch", 1, "seq", "seq"]),
+        ],
+        [helper.make_tensor_value_info("hidden_states", TensorProto.FLOAT, ["batch", "seq", 8])],
+        [numpy_helper.from_array(weight, name="weight")],
+    )
+    model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 18)])
+    model.ir_version = 11
+    onnx.save_model(model, str(source))
+
+    primary = np.arange(2 * 3 * 128, dtype=np.float32).reshape(2, 3, 128) / 1000.0
+    alternate = (np.arange(2 * 128, dtype=np.float32).reshape(1, 2, 128) - 128.0) / 700.0
+    primary_normalized = np.maximum(primary, 0)
+    alternate_normalized = np.maximum(alternate, 0)
+    case = root / "tiny-fp16-equivalence.npz"
+    np.savez(
+        case,
+        inputs_embeds=primary,
+        attention_mask=np.ones((2, 1, 3, 3), dtype=np.bool_),
+        expected=primary_normalized @ weight,
+        alt_inputs_embeds=alternate,
+        alt_attention_mask=np.ones((1, 1, 2, 2), dtype=np.bool_),
+        alt_expected=alternate_normalized @ weight,
+    )
+
+    output_dir = root / "tiny-fp16-output"
+    output = output_dir / "llm_decoder.onnx"
+    assert convert_llm_fp16(source, output) == 1
+    assert validate_fp16_llm_graph(output) == 1
+    metrics = verify_fp16_equivalence(output, case)
+    assert metrics["primary"]["cosine"] >= 0.999
+    assert metrics["alternate"]["cosine"] >= 0.999
+
+
 def test_typed_voice_manifest_uses_immutable_mobile_assets() -> None:
     revision = "gh-0123456789abcdef-123-mobile-int8"
     runtime_manifest = {
@@ -422,6 +471,7 @@ def main() -> None:
         test_external_data_split(root)
         test_quantized_graph_rejected(root)
         test_mobile_int8_quantizer_preserves_llm_contract(root)
+        test_fp16_converter_preserves_fp32_llm_io(root)
         test_release_rejects_safetensors(root)
     test_typed_voice_manifest_uses_immutable_mobile_assets()
     print("converter behavioral safety tests: PASS")

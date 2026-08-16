@@ -43,6 +43,13 @@ PROFILE_CONFIGS = {
         "releaseTag": "full-finetune-latest",
         "bits": None,
     },
+    "fp16": {
+        "id": "higgs-audio-2-tsukuyomichan-omnivoice-full-finetune-llm-fp16",
+        "displayName": "Higgs Audio 2 Tsukuyomichan OmniVoice LLM FP16",
+        "qualityProfile": "fp16-llm",
+        "releaseTag": "fp16-latest",
+        "bits": None,
+    },
     "mobile-int8": {
         "id": "higgs-audio-2-tsukuyomichan-omnivoice-full-finetune-mobile-int8",
         "displayName": "Higgs Audio 2 Tsukuyomichan OmniVoice Mobile INT8",
@@ -206,6 +213,7 @@ def build_manifest(release: Path, work: Path, hf_revision: str, profile: str = "
     hidden_size, kv_heads, head_dim = resolve_llm_runtime_dimensions(config)
     profile_config = PROFILE_CONFIGS[profile]
     mobile_quantization = None
+    fp16_conversion = None
     expected_bits = profile_config["bits"]
     if expected_bits is not None:
         quantization_path = work / f"{profile}-quantization.json"
@@ -214,6 +222,19 @@ def build_manifest(release: Path, work: Path, hf_revision: str, profile: str = "
         mobile_quantization = load_json(quantization_path)
         if int(mobile_quantization.get("bits", 0)) != expected_bits:
             raise RuntimeError(f"{profile} profile did not record a {expected_bits}-bit LLM")
+    if profile == "fp16":
+        conversion_path = work / "fp16-conversion.json"
+        if not conversion_path.is_file():
+            raise RuntimeError("fp16 profile is missing fp16-conversion.json")
+        fp16_conversion = load_json(conversion_path)
+        if fp16_conversion.get("scope") != "llm-only":
+            raise RuntimeError("fp16 profile must convert only the LLM")
+        if fp16_conversion.get("weightDtype") != "float16" or fp16_conversion.get("ioDtype") != "float32":
+            raise RuntimeError("fp16 profile must keep FP32 LLM I/O around FP16 MatMul weights")
+        if fp16_conversion.get("computeDtype") != "fp16-constant-matmul-fp32-otherwise":
+            raise RuntimeError("fp16 profile must record constant-MatMul-only FP16 compute")
+        if fp16_conversion.get("fp16ComputeScope") != "constant-matmul-only":
+            raise RuntimeError("fp16 profile must limit FP16 compute to constant MatMul nodes")
 
     sessions = {}
     session_specs = {
@@ -248,7 +269,7 @@ def build_manifest(release: Path, work: Path, hf_revision: str, profile: str = "
         "id": profile_config["id"],
         "displayName": profile_config["displayName"],
         "qualityProfile": profile_config["qualityProfile"],
-        "quantized": profile != "fp32",
+        "quantized": expected_bits is not None,
         "distribution": build_distribution(hf_revision, profile),
         "source": {
             "omnivoiceCode": {
@@ -324,6 +345,20 @@ def build_manifest(release: Path, work: Path, hf_revision: str, profile: str = "
             "higgsDecoderQuantized": False,
             "equivalence": mobile_quantization["equivalence"],
         }
+    if fp16_conversion is not None:
+        manifest["precision"] = {
+            "scope": "llm-only",
+            "weightDtype": "float16",
+            "computeDtype": "fp16-constant-matmul-fp32-otherwise",
+            "ioDtype": "float32",
+            "fp16ComputeScope": "constant-matmul-only",
+            "audioEmbeddingsDtype": "float32",
+            "audioHeadsDtype": "float32",
+            "higgsDecoderDtype": "float32",
+            "equivalence": fp16_conversion["equivalence"],
+            "sourceBytes": int(fp16_conversion["sourceBytes"]),
+            "convertedBytes": int(fp16_conversion["convertedBytes"]),
+        }
     return manifest
 
 
@@ -384,6 +419,7 @@ def write_notices(release: Path, manifest: dict) -> None:
     voice = manifest["source"]["voiceCheckpoint"]
     codec = manifest["source"]["audioCodec"]
     is_mobile = bool(manifest.get("quantized"))
+    is_fp16 = manifest.get("qualityProfile") == "fp16-llm"
     mobile_bits = int(manifest.get("quantization", {}).get("weightBits", 0)) if is_mobile else None
     title = manifest["displayName"]
     notice = f"""{title}
@@ -423,6 +459,16 @@ Copies of the Boson Higgs Audio 2 and Meta Llama 3 license agreements are includ
 - Audio embeddings, audio heads, and the Higgs decoder remain unquantized FP32.
 - `llm_decoder.onnx` still preserves OmniVoice's rank-4 Boolean non-causal attention mask and does not use KV cache.
 - The quantized LLM is compared against the FP32 PyTorch golden cases before publication; the measured error metrics are recorded in `runtime-manifest.json`.
+"""
+    elif is_fp16:
+        profile_notes = """This is the **LLM-only FP16 MatMul runtime** of the same pinned Tsukuyomichan OmniVoice full-finetune checkpoint used by the FP32 quality baseline.
+
+- The complete FP32 runtime is exported and verified first; no model-export stage is skipped for this profile.
+- Only constant-weight `MatMul` nodes in `llm_decoder.onnx` are converted as a post-export step: FP32 activation -> FP16 MatMul/weight -> FP32 result.
+- RMSNorm, attention/softmax, residual math, nonlinearities, and dynamic MatMul nodes remain FP32.
+- The LLM keeps FP32 `inputs_embeds` / `hidden_states` I/O and the same rank-4 Boolean non-causal attention contract.
+- Audio embeddings, audio heads, and the Higgs waveform decoder remain FP32.
+- The FP16 LLM is compared against the FP32 PyTorch golden cases before publication; the measured error metrics and size reduction are recorded in `runtime-manifest.json`.
 """
     else:
         profile_notes = """This is an **unquantized FP32 quality-baseline conversion** of the pinned Tsukuyomichan OmniVoice full-finetune checkpoint for browser/runtime evaluation.

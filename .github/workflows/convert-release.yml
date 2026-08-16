@@ -26,6 +26,11 @@ jobs:
             release_tag: full-finetune-latest
             release_name: Higgs Audio 2 Tsukuyomichan OmniVoice ONNX FP32
             make_latest: true
+          - profile: fp16
+            hf_branch: fp16
+            release_tag: fp16-latest
+            release_name: Higgs Audio 2 Tsukuyomichan OmniVoice LLM FP16
+            make_latest: false
           - profile: mobile-int8
             hf_branch: mobile-int8
             release_tag: mobile-int8-latest
@@ -113,6 +118,13 @@ jobs:
             --work-dir "$BUILD_ROOT" \
             --release-dir "$RELEASE_DIR" \
             --bits "${BUILD_PROFILE#mobile-int}"
+
+      - name: Convert LLM constant MatMuls to FP16
+        if: matrix.profile == 'fp16'
+        run: |
+          python scripts/convert_fp16.py \
+            --work-dir "$BUILD_ROOT" \
+            --release-dir "$RELEASE_DIR"
 
       - name: Assert original voice checkpoint was discarded
         run: |
