@@ -13,6 +13,17 @@ from export_fp32 import split_oversized_external_data, validate_unquantized_grap
 from finalize_release import REQUIRED_FILES, REQUIRED_MODELS, check_release_files
 
 
+def test_required_model_apis_import() -> None:
+    # Run before any multi-GB checkpoint download.  The converter depends on
+    # OmniVoice's own package for the model class; it is not a Transformers
+    # top-level model export.
+    from omnivoice import OmniVoice
+    from transformers import HiggsAudioV2TokenizerModel
+
+    assert callable(getattr(OmniVoice, "from_pretrained", None))
+    assert callable(getattr(HiggsAudioV2TokenizerModel, "from_pretrained", None))
+
+
 def save_two_weight_model(path: Path) -> tuple[np.ndarray, np.ndarray]:
     left = np.arange(64, dtype=np.float32).reshape(8, 8)
     right = np.arange(64, 128, dtype=np.float32).reshape(8, 8)
@@ -94,6 +105,7 @@ def test_release_rejects_safetensors(root: Path) -> None:
 
 
 def main() -> None:
+    test_required_model_apis_import()
     with tempfile.TemporaryDirectory(prefix="tsukuyomichan-onnx-self-test-") as temp:
         root = Path(temp)
         test_external_data_split(root)

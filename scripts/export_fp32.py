@@ -273,7 +273,7 @@ def assert_close(label: str, expected: np.ndarray, actual: np.ndarray, rtol: flo
 
 
 def save_backbone(source_dir: Path, work: Path, release: Path) -> None:
-    from transformers import OmniVoice
+    from omnivoice import OmniVoice
 
     torch.manual_seed(0)
     np.random.seed(0)
