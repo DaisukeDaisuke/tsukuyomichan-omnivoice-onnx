@@ -326,7 +326,9 @@ def test_mobile_int8_quantizer_preserves_llm_contract(root: Path) -> None:
         [helper.make_tensor_value_info("hidden_states", TensorProto.FLOAT, ["batch", "seq", 8])],
         [numpy_helper.from_array(weight, name="weight")],
     )
-    onnx.save_model(helper.make_model(graph, opset_imports=[helper.make_opsetid("", 18)]), str(source))
+    model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 18)])
+    model.ir_version = 11
+    onnx.save_model(model, str(source))
 
     primary = np.arange(2 * 3 * 128, dtype=np.float32).reshape(2, 3, 128) / 1000.0
     alternate = (np.arange(2 * 128, dtype=np.float32).reshape(1, 2, 128) - 128.0) / 700.0
