@@ -164,6 +164,50 @@ def external_metadata(tensor: onnx.TensorProto) -> dict[str, str]:
     return {entry.key: entry.value for entry in tensor.external_data}
 
 
+def move_builder_model_output(builder_output: Path, release: Path) -> None:
+    """Move only the LLM graph/data and GenAI config out of ModelBuilder output.
+
+    ModelBuilder also writes processing/tokenizer files.  Those must never be
+    allowed to overwrite the exact tokenizer copied from the pinned voice
+    checkpoint, so the builder runs in an isolated temporary directory.
+    """
+    model_source = builder_output / "llm_decoder.onnx"
+    if not model_source.is_file():
+        raise RuntimeError("ORT GenAI builder did not produce llm_decoder.onnx")
+
+    model = onnx.load(str(model_source), load_external_data=False)
+    locations: set[str] = set()
+    for tensor in model.graph.initializer:
+        if tensor.data_location != TensorProto.EXTERNAL:
+            continue
+        location = external_metadata(tensor).get("location")
+        if not location:
+            raise RuntimeError(f"Builder external initializer {tensor.name} has no location")
+        location_path = Path(location)
+        if location_path.is_absolute() or ".." in location_path.parts:
+            raise RuntimeError(f"Unsafe builder external-data location: {location}")
+        locations.add(location)
+
+    for location in sorted(locations):
+        source = builder_output / location
+        if not source.is_file():
+            raise RuntimeError(f"Builder model references missing external data: {location}")
+        destination = release / location
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        if destination.exists():
+            destination.unlink()
+        shutil.move(str(source), str(destination))
+
+    model_destination = release / model_source.name
+    if model_destination.exists():
+        model_destination.unlink()
+    shutil.move(str(model_source), str(model_destination))
+
+    genai_config = builder_output / "genai_config.json"
+    if genai_config.is_file():
+        shutil.copy2(genai_config, release / genai_config.name)
+
+
 def retarget_external_data(tensor: onnx.TensorProto, location: str, offset: int, length: int) -> None:
     """Rewrite metadata for an already-externalized initializer.
 
@@ -385,6 +429,8 @@ def save_backbone(source_dir: Path, work: Path, release: Path) -> None:
     gc.collect()
 
     builder_cache = work / "builder-cache"
+    builder_output = work / "builder-output"
+    shutil.rmtree(builder_output, ignore_errors=True)
     command = [
         sys.executable,
         "-m",
@@ -392,7 +438,7 @@ def save_backbone(source_dir: Path, work: Path, release: Path) -> None:
         "-i",
         str(qwen_dir),
         "-o",
-        str(release),
+        str(builder_output),
         "-p",
         "fp32",
         "-e",
@@ -407,6 +453,7 @@ def save_backbone(source_dir: Path, work: Path, release: Path) -> None:
     ]
     print("Running:", " ".join(command))
     subprocess.run(command, check=True)
+    move_builder_model_output(builder_output, release)
     split_oversized_external_data(release / "llm_decoder.onnx")
 
     for model_path in (
@@ -419,6 +466,7 @@ def save_backbone(source_dir: Path, work: Path, release: Path) -> None:
     verify_llm_equivalence(release / "llm_decoder.onnx", work / "llm_equiv.npz")
     shutil.rmtree(qwen_dir, ignore_errors=True)
     shutil.rmtree(builder_cache, ignore_errors=True)
+    shutil.rmtree(builder_output, ignore_errors=True)
     gc.collect()
 
 

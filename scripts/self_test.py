@@ -2,6 +2,8 @@
 """Behavioral safety tests that run before downloading multi-GB checkpoints."""
 from __future__ import annotations
 
+import hashlib
+import json
 import tempfile
 import subprocess
 import sys
@@ -13,7 +15,13 @@ import torch
 from onnx import TensorProto, helper, numpy_helper
 
 from export_fp32 import ort_session, split_oversized_external_data, torch_export, validate_unquantized_graph
-from finalize_release import REQUIRED_FILES, REQUIRED_MODELS, check_release_files
+from finalize_release import (
+    REQUIRED_FILES,
+    REQUIRED_MODELS,
+    check_release_files,
+    resolve_llm_runtime_dimensions,
+    verify_source_runtime_files,
+)
 
 
 def test_required_model_apis_import() -> None:
@@ -43,25 +51,84 @@ def test_required_model_apis_import() -> None:
 
 def test_modern_torch_onnx_export(root: Path) -> None:
     class TinyAdd(torch.nn.Module):
-        def forward(self, value: torch.Tensor) -> torch.Tensor:
-            return value + 1.0
+        def forward(self, left: torch.Tensor, right: torch.Tensor) -> torch.Tensor:
+            return left + right
 
     path = root / "modern-export.onnx"
-    value = torch.arange(6, dtype=torch.float32).reshape(1, 6)
+    left = torch.arange(6, dtype=torch.float32).reshape(1, 6)
+    right = torch.ones_like(left)
     torch_export(
         TinyAdd().eval(),
-        (value,),
+        (left, right),
         path,
-        ["value"],
+        ["left", "right"],
         ["result"],
         {
-            "value": {0: "batch", 1: "seq"},
+            "left": {0: "batch", 1: "seq"},
+            "right": {0: "batch", 1: "seq"},
             "result": {0: "batch", 1: "seq"},
         },
     )
     onnx.checker.check_model(onnx.load(str(path), load_external_data=False))
-    actual = ort_session(path).run(["result"], {"value": value.numpy()})[0]
-    np.testing.assert_allclose(actual, value.numpy() + 1.0, rtol=0.0, atol=0.0)
+    session = ort_session(path)
+    actual = session.run(["result"], {"left": left.numpy(), "right": right.numpy()})[0]
+    np.testing.assert_allclose(actual, left.numpy() + right.numpy(), rtol=0.0, atol=0.0)
+
+    # Prove the new exporter kept the shared batch/sequence dimensions dynamic,
+    # rather than only accepting the example shape used during export.
+    alt_left = np.arange(18, dtype=np.float32).reshape(2, 9)
+    alt_right = np.full((2, 9), 2.0, dtype=np.float32)
+    alt_actual = session.run(["result"], {"left": alt_left, "right": alt_right})[0]
+    np.testing.assert_allclose(alt_actual, alt_left + alt_right, rtol=0.0, atol=0.0)
+
+
+def test_manifest_uses_explicit_qwen_head_dim() -> None:
+    hidden_size, kv_heads, head_dim = resolve_llm_runtime_dimensions(
+        {
+            "llm_config": {
+                "hidden_size": 1024,
+                "num_attention_heads": 16,
+                "num_key_value_heads": 8,
+                "head_dim": 128,
+            }
+        }
+    )
+    assert hidden_size == 1024
+    assert kv_heads == 8
+    assert head_dim == 128
+
+
+def test_source_runtime_files_cannot_be_clobbered(root: Path) -> None:
+    release = root / "source-runtime-release"
+    work = root / "source-runtime-work"
+    release.mkdir()
+    work.mkdir()
+    mapping = {
+        "config.json": "omnivoice_config.json",
+        "tokenizer.json": "tokenizer.json",
+        "tokenizer_config.json": "tokenizer_config.json",
+        "chat_template.jinja": "chat_template.jinja",
+    }
+    runtime_files = {}
+    for index, (source_name, release_name) in enumerate(mapping.items()):
+        data = f"pinned-runtime-file-{index}\n".encode("utf-8")
+        (release / release_name).write_bytes(data)
+        runtime_files[source_name] = {
+            "byte_size": len(data),
+            "sha256": hashlib.sha256(data).hexdigest(),
+        }
+    (work / "full-source.json").write_text(
+        json.dumps({"runtime_files": runtime_files}) + "\n",
+        encoding="utf-8",
+    )
+    verify_source_runtime_files(release, work)
+    (release / "tokenizer.json").write_text("builder-overwrite\n", encoding="utf-8")
+    try:
+        verify_source_runtime_files(release, work)
+    except RuntimeError as error:
+        assert "modified after download" in str(error)
+    else:
+        raise AssertionError("Source tokenizer clobber was not rejected")
 
 
 def test_pinned_license_fetches(root: Path) -> None:
@@ -160,9 +227,11 @@ def test_release_rejects_safetensors(root: Path) -> None:
 
 def main() -> None:
     test_required_model_apis_import()
+    test_manifest_uses_explicit_qwen_head_dim()
     with tempfile.TemporaryDirectory(prefix="tsukuyomichan-onnx-self-test-") as temp:
         root = Path(temp)
         test_modern_torch_onnx_export(root)
+        test_source_runtime_files_cannot_be_clobbered(root)
         test_pinned_license_fetches(root)
         test_external_data_split(root)
         test_quantized_graph_rejected(root)

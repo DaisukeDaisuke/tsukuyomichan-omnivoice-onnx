@@ -33,6 +33,12 @@ SOURCE_MODEL_SIZE = 2_450_344_144
 SOURCE_MODEL_SHA256 = "9ebaa8dd3bf35ceb6217cd19142bdabe6d6c044cca40672d2ae163d1a90ab47e"
 HIGGS_MODEL_SIZE = 805_665_628
 HIGGS_MODEL_SHA256 = "fe7c5e8785e0a05833e1bfc3e002ec7f55af21e306b2e7154a448c1f54ccfb0d"
+SOURCE_RUNTIME_RELEASE_FILES = {
+    "config.json": "omnivoice_config.json",
+    "tokenizer.json": "tokenizer.json",
+    "tokenizer_config.json": "tokenizer_config.json",
+    "chat_template.jinja": "chat_template.jinja",
+}
 
 
 def sha256_file(path: Path, chunk_size: int = 8 * 1024 * 1024) -> str:
@@ -100,14 +106,45 @@ def check_release_files(release: Path) -> None:
                 raise RuntimeError(f"{model_name} references missing external data: {location}")
 
 
-def build_manifest(release: Path, work: Path) -> dict:
+def verify_source_runtime_files(release: Path, work: Path) -> None:
     full_source = load_json(work / "full-source.json")
-    higgs_source = load_json(work / "higgs-source.json")
-    config = load_json(release / "omnivoice_config.json")
+    expected_files = full_source.get("runtime_files")
+    if not isinstance(expected_files, dict):
+        raise RuntimeError("full-source.json is missing pinned runtime_files integrity metadata")
+    for source_name, release_name in SOURCE_RUNTIME_RELEASE_FILES.items():
+        metadata = expected_files.get(source_name)
+        if not isinstance(metadata, dict):
+            raise RuntimeError(f"Missing integrity metadata for pinned runtime file: {source_name}")
+        path = release / release_name
+        if not path.is_file():
+            raise RuntimeError(f"Pinned runtime file is missing from release: {release_name}")
+        expected_size = int(metadata["byte_size"])
+        expected_sha = str(metadata["sha256"])
+        actual_size = path.stat().st_size
+        actual_sha = sha256_file(path)
+        if actual_size != expected_size or actual_sha != expected_sha:
+            raise RuntimeError(
+                f"Pinned runtime file was modified after download: {release_name} "
+                f"(size {actual_size} != {expected_size}, sha256 {actual_sha} != {expected_sha})"
+            )
+
+
+def resolve_llm_runtime_dimensions(config: dict) -> tuple[int, int, int]:
     llm_config = config.get("llm_config", {})
     hidden_size = int(llm_config.get("hidden_size", 1024))
     attention_heads = int(llm_config.get("num_attention_heads", 16))
     kv_heads = int(llm_config.get("num_key_value_heads", 8))
+    head_dim = int(llm_config.get("head_dim", hidden_size // attention_heads))
+    if hidden_size <= 0 or attention_heads <= 0 or kv_heads <= 0 or head_dim <= 0:
+        raise RuntimeError("Invalid LLM runtime dimensions in OmniVoice config")
+    return hidden_size, kv_heads, head_dim
+
+
+def build_manifest(release: Path, work: Path) -> dict:
+    full_source = load_json(work / "full-source.json")
+    higgs_source = load_json(work / "higgs-source.json")
+    config = load_json(release / "omnivoice_config.json")
+    hidden_size, kv_heads, head_dim = resolve_llm_runtime_dimensions(config)
 
     sessions = {}
     session_specs = {
@@ -176,7 +213,7 @@ def build_manifest(release: Path, work: Path) -> dict:
             "tokenizerDirectory": ".",
             "hiddenSize": hidden_size,
             "numKvHeads": kv_heads,
-            "headDim": hidden_size // attention_heads,
+            "headDim": head_dim,
             "decoderInputName": "codes",
             "decoderOutputName": "waveform_24k",
             "generation": {
@@ -296,6 +333,7 @@ def main() -> None:
     release = Path(args.release_dir).resolve()
 
     check_release_files(release)
+    verify_source_runtime_files(release, work)
     manifest = build_manifest(release, work)
     (release / "runtime-manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     write_notices(release, manifest)

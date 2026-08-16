@@ -30,6 +30,12 @@ FULL_PATTERNS = [
     "README_ja.md",
     "train_config.json",
 ]
+FULL_RUNTIME_FILES = (
+    "config.json",
+    "tokenizer.json",
+    "tokenizer_config.json",
+    "chat_template.jinja",
+)
 HIGGS_PATTERNS = [
     "README.md",
     "audio_tokenizer/model.safetensors",
@@ -66,6 +72,15 @@ def download_full(work: Path, release: Path) -> None:
         local_dir=full_dir,
     )
     verify(full_dir / "model.safetensors", FULL_MODEL_SIZE, FULL_MODEL_SHA256)
+    runtime_files = {}
+    for name in FULL_RUNTIME_FILES:
+        source = full_dir / name
+        if not source.is_file():
+            raise RuntimeError(f"Pinned full-finetune runtime file is missing: {name}")
+        runtime_files[name] = {
+            "byte_size": source.stat().st_size,
+            "sha256": sha256_file(source),
+        }
     for source_name, release_name in (
         ("README.md", "TSUKUYOMICHAN_MODEL_CARD.md"),
         ("README_ja.md", "TSUKUYOMICHAN_MODEL_CARD_JA.md"),
@@ -80,6 +95,7 @@ def download_full(work: Path, release: Path) -> None:
                 "revision": FULL_REVISION,
                 "model_sha256": FULL_MODEL_SHA256,
                 "model_byte_size": FULL_MODEL_SIZE,
+                "runtime_files": runtime_files,
                 "path": str(full_dir),
             },
             indent=2,
