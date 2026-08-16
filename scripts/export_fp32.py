@@ -21,7 +21,7 @@ import onnxruntime as ort
 import torch
 import torch.nn as nn
 from onnx import TensorProto
-from onnx.external_data_helper import set_external_data
+
 
 HIDDEN_SIZE = 1024
 NUM_CODEBOOKS = 8
@@ -156,6 +156,26 @@ def external_metadata(tensor: onnx.TensorProto) -> dict[str, str]:
     return {entry.key: entry.value for entry in tensor.external_data}
 
 
+def retarget_external_data(tensor: onnx.TensorProto, location: str, offset: int, length: int) -> None:
+    """Rewrite metadata for an already-externalized initializer.
+
+    ``set_external_data`` is intentionally not used here.  That helper expects
+    the TensorProto to still contain ``raw_data`` and raises when a model was
+    loaded with ``load_external_data=False``.  During chunk splitting the bytes
+    remain external the entire time; only their location/offset metadata moves.
+    """
+    tensor.ClearField("external_data")
+    tensor.data_location = TensorProto.EXTERNAL
+    for key, value in (
+        ("location", location),
+        ("offset", str(offset)),
+        ("length", str(length)),
+    ):
+        entry = tensor.external_data.add()
+        entry.key = key
+        entry.value = value
+
+
 def split_oversized_external_data(model_path: Path, limit: int = MAX_RELEASE_ASSET_BYTES) -> None:
     model = onnx.load(str(model_path), load_external_data=False)
     external_tensors = []
@@ -207,8 +227,7 @@ def split_oversized_external_data(model_path: Path, limit: int = MAX_RELEASE_ASS
                         raise RuntimeError(f"Unexpected EOF while splitting {source}")
                     chunk_stream.write(block)
                     remaining -= len(block)
-            tensor.ClearField("external_data")
-            set_external_data(tensor, location=chunk_path.name, offset=chunk_size, length=length)
+            retarget_external_data(tensor, chunk_path.name, chunk_size, length)
             chunk_size += length
     finally:
         if chunk_stream is not None:
