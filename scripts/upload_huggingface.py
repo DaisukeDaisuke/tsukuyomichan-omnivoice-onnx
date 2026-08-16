@@ -102,6 +102,24 @@ FP16 and BF16 weights/operators and numerically compares exported components aga
 outputs before publication. `llm_decoder` preserves OmniVoice's rank-4 Boolean non-causal attention
 mask and runs without KV cache; a 2-D causal/padding-mask LLM contract is rejected by the release gate.
 
+# Download and try your computer!
+
+You can run the browser PoC directly here:
+
+https://daisukedaisuke.github.io/typed-voice/poc.html
+
+The PoC downloads the converted runtime into persistent browser storage so it can be reused across
+reloads. The current FP32 runtime is about **2.4 GiB**, so the first preparation consumes more than
+2 GB of network transfer and persistent local storage. Make sure your connection and device have
+enough capacity before starting the download. Clearing this site's stored data removes the persistent
+model cache when you want to reclaim the space.
+
+The browser app uses a **Service Worker** for the offline model-asset path, persistent Cache Storage,
+and cross-origin isolation. On WebGPU-capable desktop browsers, the validated fast path uses a
+**WebGPU + WebAssembly hybrid**: audio embeddings, the LLM, and audio heads run on WebGPU, while the
+Higgs waveform decoder runs on WebAssembly because this preserves the clean reference audio quality.
+Browsers without the required WebGPU path fall back to WebAssembly where supported.
+
 ## Audio Samples
 
 These WAV files are generated on the GitHub Actions CPU runner with native Python + ONNX Runtime from
@@ -129,6 +147,9 @@ distribution mirror of the same verified files.
 
 本ソフトウェアの音声合成には、フリー素材キャラクター「つくよみちゃん」（© Rei Yumesaki）が無料公開している音声データを使用しています。
 
+このモデルは、**つくよみちゃんというキャラクターの声をもとにした音声合成モデルです。**
+モデルの変換形式や配布形態が変わっても、誰の声をもとにしているのか分からなくならないよう、つくよみちゃん由来であることを明記しています。
+
 ■つくよみちゃんコーパス（CV.夢前黎）
 https://tyc.rei-yumesaki.net/material/corpus/
 
@@ -143,9 +164,14 @@ https://tyc.rei-yumesaki.net/material/corpus/
 
 ※鑑賞用の作品として配布・販売していただくことは問題ございません。
 
+出力音声の利用条件の詳細は、つくよみちゃんコーパスの利用規約をご確認ください。
+https://tyc.rei-yumesaki.net/material/corpus/
+
 ### 改変・再配布について
 
-つくよみちゃんのモデルそのものを素材として使用する場合（改変、ファインチューニング、他モデルとのマージ、再配布などを行う場合）、つくよみちゃんコーパスに由来する部分の取り扱いについては、[**つくよみちゃんコーパスの利用規約**](https://tyc.rei-yumesaki.net/material/corpus/) に従ってください。この規定は、派生ソフトや再配布されたデータにもコピーレフトされます。
+つくよみちゃんのモデルそのものを素材として使用する場合（改変、ファインチューニング、他モデルとのマージ、再配布などを行う場合）、つくよみちゃんコーパスに由来する部分の取り扱いについては、つくよみちゃんコーパスの利用規約に従ってください。この規定は、派生ソフトや再配布されたデータにもコピーレフトされます。
+
+https://tyc.rei-yumesaki.net/material/corpus/
 
 ## License / upstream terms
 

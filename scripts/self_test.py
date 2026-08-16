@@ -163,12 +163,16 @@ def test_huggingface_distribution_and_model_card(root: Path) -> None:
     assert "license: other" in card
     assert revision in card
     assert "### 出力音声の利用制限" in card
+    assert "つくよみちゃんというキャラクターの声をもとにした音声合成モデルです。" in card
+    assert "誰の声をもとにしているのか分からなくならないよう" in card
     assert "人を批判・攻撃すること。" in card
     assert "特定の政治的立場・宗教・思想への賛同または反対を呼びかけること。" in card
     assert "刺激の強い表現をゾーニングなしで公開すること。" in card
     assert "他者に対して二次利用（素材としての利用）を許可する形で公開すること。" in card
+    assert "出力音声の利用条件の詳細は、つくよみちゃんコーパスの利用規約をご確認ください。" in card
     assert "### 改変・再配布について" in card
     assert "派生ソフトや再配布されたデータにもコピーレフトされます。" in card
+    assert card.count("https://tyc.rei-yumesaki.net/material/corpus/") >= 3
     assert "## Audio Samples" in card
     assert "native Python + ONNX Runtime" in card
     assert "### Japanese" in card

@@ -90,6 +90,16 @@ Text: `Hey, you finally made it! How does it feel, looking back at everything we
 
 Direct file: [samples/04_found_me_waiting_English.wav](https://huggingface.co/RabbitDaisuke/tsukuyomichan-omnivoice-full-finetune-onnx/resolve/main/samples/04_found_me_waiting_English.wav)
 
+# Download and try your computer!
+
+ブラウザPoCは次から直接試せます。
+
+https://daisukedaisuke.github.io/typed-voice/poc.html
+
+PoCは変換済みFP32 runtimeをブラウザの永続Cacheへ保存して、reload後も再利用します。現在のruntimeは約**2.4 GiB**あるため、初回準備では2 GBを超える通信量とローカルストレージを使用します。回線容量と空きストレージを確認してから実行してください。容量を戻したい場合は、このサイトの保存済みデータを削除すれば永続モデルCacheも削除できます。
+
+モデルassetのoffline path、永続Cache、cross-origin isolationには**Service Worker**を使用します。WebGPUを利用できるdesktop browserでは、音質検証済みの**WebGPU + WebAssembly hybrid inference**を使用します。audio embeddings / LLM / audio headsはWebGPU、Higgs waveform decoderはWebAssemblyで実行します。Higgs decoderをWebGPUで実行すると音質劣化が確認されたため、ここだけWebAssemblyへ固定しています。必要なWebGPU経路を利用できないbrowserでは、対応可能な場合はWebAssemblyへfallbackします。
+
 ## Source pins
 
 - Voice: `kizuna-intelligence/tsukuyomichan-omnivoice-full-finetune` @ `c1d7ff9477d0b21f220c58070da63355f69607e9`
@@ -105,6 +115,9 @@ model checkpointは固定revisionに加えてbyte sizeとSHA-256を検証しま�
 このリポジトリにある**変換コード**はトップレベル `LICENSE` のMIT Licenseです。変換後モデル、元モデル、つくよみちゃんコーパス由来部分、Higgs Audio 2、Meta Llama 3がMITへ再ライセンスされるわけではありません。
 
 本ソフトウェアの音声合成には、フリー素材キャラクター「つくよみちゃん」（© Rei Yumesaki）が無料公開している音声データを使用しています。
+
+このモデルは、**つくよみちゃんというキャラクターの声をもとにした音声合成モデルです。**
+モデルの変換形式や配布形態が変わっても、誰の声をもとにしているのか分からなくならないよう、つくよみちゃん由来であることを明記しています。
 
 ■つくよみちゃんコーパス（CV.夢前黎）
 https://tyc.rei-yumesaki.net/material/corpus/
