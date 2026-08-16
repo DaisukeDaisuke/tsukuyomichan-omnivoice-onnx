@@ -35,7 +35,30 @@ SOURCE_MODEL_SHA256 = "9ebaa8dd3bf35ceb6217cd19142bdabe6d6c044cca40672d2ae163d1a
 HIGGS_MODEL_SIZE = 805_665_628
 HIGGS_MODEL_SHA256 = "fe7c5e8785e0a05833e1bfc3e002ec7f55af21e306b2e7154a448c1f54ccfb0d"
 HF_MIRROR_REPO = "RabbitDaisuke/tsukuyomichan-omnivoice-full-finetune-onnx"
-PROFILES = ("fp32", "mobile-int8")
+PROFILE_CONFIGS = {
+    "fp32": {
+        "id": "higgs-audio-2-tsukuyomichan-omnivoice-full-finetune-fp32",
+        "displayName": "Higgs Audio 2 Tsukuyomichan OmniVoice Full Finetune ONNX FP32",
+        "qualityProfile": "fp32-unquantized",
+        "releaseTag": "full-finetune-latest",
+        "bits": None,
+    },
+    "mobile-int8": {
+        "id": "higgs-audio-2-tsukuyomichan-omnivoice-full-finetune-mobile-int8",
+        "displayName": "Higgs Audio 2 Tsukuyomichan OmniVoice Mobile INT8",
+        "qualityProfile": "mobile-int8-weight-only",
+        "releaseTag": "mobile-int8-latest",
+        "bits": 8,
+    },
+    "mobile-int4": {
+        "id": "higgs-audio-2-tsukuyomichan-omnivoice-full-finetune-mobile-int4",
+        "displayName": "Higgs Audio 2 Tsukuyomichan OmniVoice Mobile INT4",
+        "qualityProfile": "mobile-int4-weight-only",
+        "releaseTag": "mobile-int4-latest",
+        "bits": 4,
+    },
+}
+PROFILES = tuple(PROFILE_CONFIGS)
 SOURCE_RUNTIME_RELEASE_FILES = {
     "config.json": "omnivoice_config.json",
     "tokenizer.json": "tokenizer.json",
@@ -49,7 +72,7 @@ def build_distribution(hf_revision: str, profile: str = "fp32") -> dict:
         raise RuntimeError("Hugging Face mirror revision must be an immutable build-specific revision")
     if profile not in PROFILES:
         raise RuntimeError(f"Unsupported release profile: {profile}")
-    github_tag = "full-finetune-latest" if profile == "fp32" else "mobile-int8-latest"
+    github_tag = PROFILE_CONFIGS[profile]["releaseTag"]
     return {
         "provider": "github-release",
         "repo": "DaisukeDaisuke/tsukuyomichan-omnivoice-onnx",
@@ -181,14 +204,16 @@ def build_manifest(release: Path, work: Path, hf_revision: str, profile: str = "
     higgs_source = load_json(work / "higgs-source.json")
     config = load_json(release / "omnivoice_config.json")
     hidden_size, kv_heads, head_dim = resolve_llm_runtime_dimensions(config)
+    profile_config = PROFILE_CONFIGS[profile]
     mobile_quantization = None
-    if profile == "mobile-int8":
-        quantization_path = work / "mobile-int8-quantization.json"
+    expected_bits = profile_config["bits"]
+    if expected_bits is not None:
+        quantization_path = work / f"{profile}-quantization.json"
         if not quantization_path.is_file():
-            raise RuntimeError("mobile-int8 profile is missing mobile-int8-quantization.json")
+            raise RuntimeError(f"{profile} profile is missing {profile}-quantization.json")
         mobile_quantization = load_json(quantization_path)
-        if int(mobile_quantization.get("bits", 0)) != 8:
-            raise RuntimeError("mobile-int8 profile did not record an 8-bit LLM")
+        if int(mobile_quantization.get("bits", 0)) != expected_bits:
+            raise RuntimeError(f"{profile} profile did not record a {expected_bits}-bit LLM")
 
     sessions = {}
     session_specs = {
@@ -220,17 +245,9 @@ def build_manifest(release: Path, work: Path, hf_revision: str, profile: str = "
     assets = [release_asset(release / path, "runtime") for path in sorted(runtime_paths)]
     manifest = {
         "schemaVersion": 1,
-        "id": (
-            "higgs-audio-2-tsukuyomichan-omnivoice-full-finetune-fp32"
-            if profile == "fp32"
-            else "higgs-audio-2-tsukuyomichan-omnivoice-full-finetune-mobile-int8"
-        ),
-        "displayName": (
-            "Higgs Audio 2 Tsukuyomichan OmniVoice Full Finetune ONNX FP32"
-            if profile == "fp32"
-            else "Higgs Audio 2 Tsukuyomichan OmniVoice Mobile INT8"
-        ),
-        "qualityProfile": "fp32-unquantized" if profile == "fp32" else "mobile-int8-weight-only",
+        "id": profile_config["id"],
+        "displayName": profile_config["displayName"],
+        "qualityProfile": profile_config["qualityProfile"],
         "quantized": profile != "fp32",
         "distribution": build_distribution(hf_revision, profile),
         "source": {
@@ -366,12 +383,9 @@ def build_typed_voice_manifest(runtime_manifest: dict, hf_revision: str) -> dict
 def write_notices(release: Path, manifest: dict) -> None:
     voice = manifest["source"]["voiceCheckpoint"]
     codec = manifest["source"]["audioCodec"]
-    is_mobile = manifest["qualityProfile"] == "mobile-int8-weight-only"
-    title = (
-        "Higgs Audio 2 Tsukuyomichan OmniVoice Mobile INT8"
-        if is_mobile
-        else "Higgs Audio 2 Tsukuyomichan OmniVoice Full Finetune ONNX FP32"
-    )
+    is_mobile = bool(manifest.get("quantized"))
+    mobile_bits = int(manifest.get("quantization", {}).get("weightBits", 0)) if is_mobile else None
+    title = manifest["displayName"]
     notice = f"""{title}
 
 This release contains converted runtime artifacts. The repository's MIT license applies to converter code only; it does not relicense model weights, converted model artifacts, datasets, voice data, or codec materials.
@@ -401,10 +415,10 @@ Copies of the Boson Higgs Audio 2 and Meta Llama 3 license agreements are includ
     (release / "NOTICE.txt").write_text(notice, encoding="utf-8")
 
     if is_mobile:
-        profile_notes = """This is the **mobile 8-bit weight-only PoC conversion** of the same pinned Tsukuyomichan OmniVoice full-finetune checkpoint used by the FP32 quality baseline.
+        profile_notes = f"""This is the **mobile {mobile_bits}-bit weight-only PoC conversion** of the same pinned Tsukuyomichan OmniVoice full-finetune checkpoint used by the FP32 quality baseline.
 
 - The graph structure still comes from the validated FP32 exporter.
-- Only constant `MatMul` weights in `llm_decoder.onnx` are converted to `com.microsoft::MatMulNBits` with 8-bit weights.
+- Only constant `MatMul` weights in `llm_decoder.onnx` are converted to `com.microsoft::MatMulNBits` with {mobile_bits}-bit weights.
 - LLM activations stay FP32 (`accuracy_level=1`).
 - Audio embeddings, audio heads, and the Higgs decoder remain unquantized FP32.
 - `llm_decoder.onnx` still preserves OmniVoice's rank-4 Boolean non-causal attention mask and does not use KV cache.

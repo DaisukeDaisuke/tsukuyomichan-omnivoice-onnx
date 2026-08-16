@@ -189,11 +189,13 @@ def test_huggingface_distribution_and_model_card(root: Path) -> None:
     assert "samples/SAMPLES_SHA256SUMS" in card
     assert "XXH3-128" in card
     assert "first-download and reload validation" in card
+    assert f"https://huggingface.co/{DEFAULT_HF_REPO_ID}/tree/mobile-int4" in card
     assert f"https://huggingface.co/{DEFAULT_HF_REPO_ID}/tree/mobile-int8" in card
     assert f"https://huggingface.co/{DEFAULT_HF_REPO_ID}/tree/main" in card
     for filename, text in SAMPLE_SPECS:
         assert text in card
         assert f"/resolve/main/samples/{filename}" in card
+        assert f"/resolve/mobile-int4/samples/{filename}" in card
         assert f"/resolve/mobile-int8/samples/{filename}" in card
 
 
@@ -314,7 +316,6 @@ def test_quantized_graph_rejected(root: Path) -> None:
 
 def test_mobile_int8_quantizer_preserves_llm_contract(root: Path) -> None:
     source = root / "tiny-mobile-source.onnx"
-    output = root / "tiny-mobile-output.onnx"
     weight = np.linspace(-0.95, 0.95, 128 * 8, dtype=np.float32).reshape(128, 8)
     graph = helper.make_graph(
         [helper.make_node("MatMul", ["inputs_embeds", "weight"], ["hidden_states"], name="tiny-matmul")],
@@ -343,11 +344,13 @@ def test_mobile_int8_quantizer_preserves_llm_contract(root: Path) -> None:
         alt_expected=alternate @ weight,
     )
 
-    quantize_llm(source, output)
-    assert validate_mobile_graph(output) == 1
-    metrics = verify_equivalence(output, case)
-    assert metrics["primary"]["cosine"] >= 0.995
-    assert metrics["alternate"]["cosine"] >= 0.995
+    for bits in (4, 8):
+        output = root / f"tiny-mobile-int{bits}-output.onnx"
+        quantize_llm(source, output, bits)
+        assert validate_mobile_graph(output, bits) == 1
+        metrics = verify_equivalence(output, case, bits)
+        assert metrics["primary"]["cosine"] >= 0.995
+        assert metrics["alternate"]["cosine"] >= 0.995
 
 
 def test_typed_voice_manifest_uses_immutable_mobile_assets() -> None:

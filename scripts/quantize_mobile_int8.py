@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Convert only the already-correct OmniVoice LLM ONNX weights to 8-bit MatMulNBits.
+"""Convert only the already-correct OmniVoice LLM ONNX weights to MatMulNBits.
 
 The FP32 exporter remains the single source of truth for graph structure and
 OmniVoice's non-causal rank-4 Boolean attention contract. This script runs
 after that export and replaces constant MatMul weights in llm_decoder.onnx
-with block-wise 8-bit MatMulNBits weights. Audio embeddings, audio heads and
+with block-wise 4-bit or 8-bit MatMulNBits weights. Audio embeddings, audio heads and
 the Higgs decoder are deliberately left unchanged.
 """
 from __future__ import annotations
@@ -28,6 +28,7 @@ from onnxruntime.quantization.quant_utils import QuantFormat
 
 
 BITS = 8
+SUPPORTED_BITS = (4, 8)
 BLOCK_SIZE = 128
 # Keep activations in FP32. The mobile experiment is weight-only.
 ACCURACY_LEVEL = 1
@@ -155,18 +156,18 @@ def external_locations(model_path: Path) -> set[str]:
     return locations
 
 
-def validate_mobile_graph(model_path: Path) -> int:
+def validate_mobile_graph(model_path: Path, bits: int = BITS) -> int:
     validate_llm_attention_contract(model_path)
     model = onnx.load(str(model_path), load_external_data=False)
     quantized = [node for node in model.graph.node if node.domain == "com.microsoft" and node.op_type == "MatMulNBits"]
     if not quantized:
         raise RuntimeError("Mobile LLM contains no MatMulNBits nodes")
     for node in quantized:
-        bits = node_int_attribute(node, "bits")
+        node_bits = node_int_attribute(node, "bits")
         block_size = node_int_attribute(node, "block_size")
         accuracy_level = node_int_attribute(node, "accuracy_level")
-        if bits != BITS:
-            raise RuntimeError(f"Unexpected MatMulNBits bits={bits} in {node.name!r}")
+        if node_bits != bits:
+            raise RuntimeError(f"Unexpected MatMulNBits bits={node_bits} in {node.name!r}; expected {bits}")
         if block_size != BLOCK_SIZE:
             raise RuntimeError(f"Unexpected MatMulNBits block_size={block_size} in {node.name!r}")
         if accuracy_level != ACCURACY_LEVEL:
@@ -181,7 +182,7 @@ def make_session(model_path: Path) -> ort.InferenceSession:
     return ort.InferenceSession(str(model_path), sess_options=options, providers=["CPUExecutionProvider"])
 
 
-def compare_case(label: str, expected: np.ndarray, actual: np.ndarray) -> dict[str, float]:
+def compare_case(label: str, expected: np.ndarray, actual: np.ndarray, bits: int = BITS) -> dict[str, float]:
     expected64 = expected.astype(np.float64, copy=False)
     actual64 = actual.astype(np.float64, copy=False)
     if expected64.shape != actual64.shape:
@@ -199,17 +200,17 @@ def compare_case(label: str, expected: np.ndarray, actual: np.ndarray) -> dict[s
     max_abs = float(np.max(np.abs(delta)))
     if relative_rmse > MAX_RELATIVE_RMSE or cosine < MIN_COSINE_SIMILARITY:
         raise RuntimeError(
-            f"{label} 8-bit equivalence is outside the PoC safety envelope: "
+            f"{label} {bits}-bit equivalence is outside the PoC safety envelope: "
             f"relative_rmse={relative_rmse:.6f}, cosine={cosine:.6f}, max_abs={max_abs:.6f}"
         )
     return {"relative_rmse": relative_rmse, "cosine": cosine, "max_abs": max_abs}
 
 
-def verify_equivalence(model_path: Path, case_path: Path) -> dict[str, dict[str, float]]:
+def verify_equivalence(model_path: Path, case_path: Path, bits: int = BITS) -> dict[str, dict[str, float]]:
     case = np.load(case_path)
     session = make_session(model_path)
     if [item.name for item in session.get_inputs()] != ["inputs_embeds", "attention_mask"]:
-        raise RuntimeError("8-bit LLM input contract changed unexpectedly")
+        raise RuntimeError(f"{bits}-bit LLM input contract changed unexpectedly")
     metrics: dict[str, dict[str, float]] = {}
     for prefix, label in (("", "primary"), ("alt_", "alternate")):
         actual = session.run(
@@ -219,18 +220,20 @@ def verify_equivalence(model_path: Path, case_path: Path) -> dict[str, dict[str,
                 "attention_mask": case[f"{prefix}attention_mask"].astype(np.bool_),
             },
         )[0]
-        metrics[label] = compare_case(label, case[f"{prefix}expected"], actual)
+        metrics[label] = compare_case(label, case[f"{prefix}expected"], actual, bits)
     return metrics
 
 
-def quantize_llm(source_model: Path, output_model: Path) -> None:
+def quantize_llm(source_model: Path, output_model: Path, bits: int = BITS) -> None:
+    if bits not in SUPPORTED_BITS:
+        raise RuntimeError(f"Unsupported MatMulNBits width: {bits}")
     config = DefaultWeightOnlyQuantConfig(
         block_size=BLOCK_SIZE,
         is_symmetric=True,
         accuracy_level=ACCURACY_LEVEL,
         quant_format=QuantFormat.QOperator,
         op_types_to_quantize=("MatMul",),
-        bits=BITS,
+        bits=bits,
     )
     quantizer = MatMulNBitsQuantizer(str(source_model), algo_config=config)
     quantizer.process()
@@ -258,6 +261,7 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--work-dir", required=True)
     parser.add_argument("--release-dir", required=True)
+    parser.add_argument("--bits", type=int, choices=SUPPORTED_BITS, default=BITS)
     args = parser.parse_args()
     work = Path(args.work_dir).resolve()
     release = Path(args.release_dir).resolve()
@@ -266,16 +270,18 @@ def main() -> None:
     if not source_model.is_file() or not case_path.is_file():
         raise RuntimeError("FP32 LLM export and llm_equiv.npz must exist before mobile quantization")
 
-    output_dir = work / "mobile-int8-llm"
+    bits = int(args.bits)
+    profile = f"mobile-int{bits}"
+    output_dir = work / f"{profile}-llm"
     shutil.rmtree(output_dir, ignore_errors=True)
     output_model = output_dir / "llm_decoder.onnx"
-    quantize_llm(source_model, output_model)
-    node_count = validate_mobile_graph(output_model)
-    metrics = verify_equivalence(output_model, case_path)
-    (work / "mobile-int8-quantization.json").write_text(
+    quantize_llm(source_model, output_model, bits)
+    node_count = validate_mobile_graph(output_model, bits)
+    metrics = verify_equivalence(output_model, case_path, bits)
+    (work / f"{profile}-quantization.json").write_text(
         json.dumps(
             {
-                "bits": BITS,
+                "bits": bits,
                 "blockSize": BLOCK_SIZE,
                 "accuracyLevel": ACCURACY_LEVEL,
                 "matMulNBitsNodes": node_count,
@@ -286,9 +292,9 @@ def main() -> None:
         encoding="utf-8",
     )
     replace_release_llm(release, output_model)
-    validate_mobile_graph(release / "llm_decoder.onnx")
+    validate_mobile_graph(release / "llm_decoder.onnx", bits)
     print(
-        f"Mobile LLM quantization PASS: MatMulNBits={node_count}, bits={BITS}, "
+        f"Mobile LLM quantization PASS: MatMulNBits={node_count}, bits={bits}, "
         f"block={BLOCK_SIZE}, accuracy_level={ACCURACY_LEVEL}, metrics={metrics}"
     )
 

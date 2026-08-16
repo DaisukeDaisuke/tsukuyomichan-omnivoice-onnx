@@ -31,6 +31,11 @@ jobs:
             release_tag: mobile-int8-latest
             release_name: Higgs Audio 2 Tsukuyomichan OmniVoice Mobile INT8
             make_latest: false
+          - profile: mobile-int4
+            hf_branch: mobile-int4
+            release_tag: mobile-int4-latest
+            release_name: Higgs Audio 2 Tsukuyomichan OmniVoice Mobile INT4
+            make_latest: false
     env:
       PYTHONUNBUFFERED: "1"
       HF_REPO_ID: RabbitDaisuke/tsukuyomichan-omnivoice-full-finetune-onnx
@@ -101,12 +106,13 @@ jobs:
             --work-dir "$BUILD_ROOT" \
             --release-dir "$RELEASE_DIR"
 
-      - name: Quantize LLM weights for mobile INT8 profile
-        if: matrix.profile == 'mobile-int8'
+      - name: Quantize LLM weights for mobile profile
+        if: startsWith(matrix.profile, 'mobile-int')
         run: |
           python scripts/quantize_mobile_int8.py \
             --work-dir "$BUILD_ROOT" \
-            --release-dir "$RELEASE_DIR"
+            --release-dir "$RELEASE_DIR" \
+            --bits "${BUILD_PROFILE#mobile-int}"
 
       - name: Assert original voice checkpoint was discarded
         run: |

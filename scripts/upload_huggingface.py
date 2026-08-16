@@ -54,15 +54,16 @@ def build_model_card(
     manifest = json.loads((release / "runtime-manifest.json").read_text(encoding="utf-8"))
     voice = manifest["source"]["voiceCheckpoint"]
     codec = manifest["source"]["audioCodec"]
-    is_mobile = manifest["qualityProfile"] == "mobile-int8-weight-only"
-    title = "Tsukuyomichan OmniVoice Mobile INT8" if is_mobile else "Tsukuyomichan OmniVoice Full Finetune ONNX FP32"
+    is_mobile = bool(manifest.get("quantized"))
+    mobile_bits = int(manifest.get("quantization", {}).get("weightBits", 0)) if is_mobile else None
+    title = f"Tsukuyomichan OmniVoice Mobile INT{mobile_bits}" if is_mobile else "Tsukuyomichan OmniVoice Full Finetune ONNX FP32"
     profile_summary = (
-        "This branch contains the **mobile 8-bit weight-only** runtime. Only the LLM's constant MatMul weights are quantized to `com.microsoft::MatMulNBits`; LLM activations, audio embeddings, audio heads, and the Higgs decoder remain FP32."
+        f"This branch contains the **mobile {mobile_bits}-bit weight-only** runtime. Only the LLM's constant MatMul weights are quantized to `com.microsoft::MatMulNBits`; LLM activations, audio embeddings, audio heads, and the Higgs decoder remain FP32."
         if is_mobile
         else "This branch contains the **unquantized FP32** ONNX quality-baseline runtime."
     )
     conversion_summary = (
-        "The LLM keeps the validated rank-4 Boolean non-causal attention contract and no KV cache, then applies 8-bit weight-only `MatMulNBits` quantization as a post-export step. The release records FP32-golden equivalence metrics in `runtime-manifest.json`."
+        f"The LLM keeps the validated rank-4 Boolean non-causal attention contract and no KV cache, then applies {mobile_bits}-bit weight-only `MatMulNBits` quantization as a post-export step. The release records FP32-golden equivalence metrics in `runtime-manifest.json`."
         if is_mobile
         else "The conversion workflow rejects INT4, INT8, GPTQ, FP16 and BF16 weights/operators and numerically compares exported components against their PyTorch outputs before publication. `llm_decoder` preserves OmniVoice's rank-4 Boolean non-causal attention mask and runs without KV cache; a 2-D causal/padding-mask LLM contract is rejected by the release gate."
     )
@@ -83,7 +84,10 @@ FP32:
 Mobile INT8:
 <audio controls src="https://huggingface.co/{repo_id}/resolve/mobile-int8/samples/{filename}"></audio>
 
-Direct files: [FP32](https://huggingface.co/{repo_id}/resolve/main/samples/{filename}) / [Mobile INT8](https://huggingface.co/{repo_id}/resolve/mobile-int8/samples/{filename})"""
+Mobile INT4:
+<audio controls src="https://huggingface.co/{repo_id}/resolve/mobile-int4/samples/{filename}"></audio>
+
+Direct files: [FP32](https://huggingface.co/{repo_id}/resolve/main/samples/{filename}) / [Mobile INT8](https://huggingface.co/{repo_id}/resolve/mobile-int8/samples/{filename}) / [Mobile INT4](https://huggingface.co/{repo_id}/resolve/mobile-int4/samples/{filename})"""
             )
         return "\n\n".join(sample_blocks)
 
@@ -106,6 +110,7 @@ tags:
 
 | Distribution profile | Hugging Face | Quantization |
 | --- | --- | --- |
+| Mobile INT4 | [mobile-int4](https://huggingface.co/{repo_id}/tree/mobile-int4) | LLM constant MatMul weights: 4-bit; activations/audio/Higgs remain FP32 |
 | Mobile INT8 | [mobile-int8](https://huggingface.co/{repo_id}/tree/mobile-int8) | LLM constant MatMul weights: 8-bit; activations/audio/Higgs remain FP32 |
 | FP32 baseline | [main](https://huggingface.co/{repo_id}/tree/main) | None |
 
@@ -148,10 +153,14 @@ enough capacity before starting the download. Clearing this site's stored data r
 model cache when you want to reclaim the space.
 
 The browser app uses a **Service Worker** for the offline model-asset path, persistent Cache Storage,
-and cross-origin isolation. On WebGPU-capable desktop browsers, the validated fast path uses a
-**WebGPU + WebAssembly hybrid**: audio embeddings, the LLM, and audio heads run on WebGPU, while the
-Higgs waveform decoder runs on WebAssembly because this preserves the clean reference audio quality.
-Browsers without the required WebGPU path fall back to WebAssembly where supported.
+and cross-origin isolation. The FP32 validated fast path uses a **WebGPU + WebAssembly hybrid**:
+audio embeddings, the LLM, and audio heads run on WebGPU, while the Higgs waveform decoder runs on
+WebAssembly because this preserves the clean reference audio quality. ONNX Runtime Web 1.27 accepts
+2-bit and 4-bit `MatMulNBits` on its WebGPU contrib path but rejects 8-bit `MatMulNBits`; therefore the
+Mobile INT8 browser profile keeps the LLM on WASM while still allowing the unquantized audio embeddings
+and audio heads to use WebGPU. Mobile INT4 is published as the WebGPU-compatible quantized candidate
+and is still subject to browser audio-quality validation. Browsers without the required WebGPU path fall
+back to WebAssembly where supported.
 
 ## Audio Samples
 
