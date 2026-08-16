@@ -67,7 +67,8 @@ This repository is the browser/runtime mirror of the **unquantized FP32** ONNX c
 The runtime is split into `audio_embeddings_encoder`, `llm_decoder`, `audio_heads_decoder`, and
 `higgs_decoder` ONNX graphs with external data. The conversion workflow rejects INT4, INT8, GPTQ,
 FP16 and BF16 weights/operators and numerically compares exported components against their PyTorch
-outputs before publication.
+outputs before publication. `llm_decoder` preserves OmniVoice's rank-4 Boolean non-causal attention
+mask and runs without KV cache; a 2-D causal/padding-mask LLM contract is rejected by the release gate.
 
 ## Integrity
 

@@ -15,7 +15,13 @@ import onnx
 import torch
 from onnx import TensorProto, helper, numpy_helper
 
-from export_fp32 import ort_session, split_oversized_external_data, torch_export, validate_unquantized_graph
+from export_fp32 import (
+    ort_session,
+    split_oversized_external_data,
+    torch_export,
+    validate_llm_attention_contract,
+    validate_unquantized_graph,
+)
 from finalize_release import (
     REQUIRED_FILES,
     REQUIRED_MODELS,
@@ -48,17 +54,6 @@ def test_required_model_apis_import() -> None:
     assert "delete_patterns" in upload_parameters
     assert "exist_ok" in tag_parameters
 
-    # The ORT GenAI wheel exposes the model builder as a Python module, but
-    # builder-only dependencies are not necessarily pulled in by the runtime
-    # wheel itself. Exercise the exact module entry point before downloading
-    # any multi-GB checkpoints so a missing builder dependency fails cheaply.
-    subprocess.run(
-        [sys.executable, "-m", "onnxruntime_genai.models.builder", "--help"],
-        check=True,
-        stdout=subprocess.DEVNULL,
-    )
-
-
 def test_modern_torch_onnx_export(root: Path) -> None:
     class TinyAdd(torch.nn.Module):
         def forward(self, left: torch.Tensor, right: torch.Tensor) -> torch.Tensor:
@@ -90,6 +85,36 @@ def test_modern_torch_onnx_export(root: Path) -> None:
     alt_right = np.full((2, 9), 2.0, dtype=np.float32)
     alt_actual = session.run(["result"], {"left": alt_left, "right": alt_right})[0]
     np.testing.assert_allclose(alt_actual, alt_left + alt_right, rtol=0.0, atol=0.0)
+
+
+def save_llm_contract_model(path: Path, valid_attention: bool) -> None:
+    attention_type = TensorProto.BOOL if valid_attention else TensorProto.INT64
+    attention_shape = ["batch", 1, "seq", "seq"] if valid_attention else ["batch", "seq"]
+    graph = helper.make_graph(
+        [helper.make_node("Identity", ["inputs_embeds"], ["hidden_states"])],
+        "llm-attention-contract-test",
+        [
+            helper.make_tensor_value_info("inputs_embeds", TensorProto.FLOAT, ["batch", "seq", 1024]),
+            helper.make_tensor_value_info("attention_mask", attention_type, attention_shape),
+        ],
+        [helper.make_tensor_value_info("hidden_states", TensorProto.FLOAT, ["batch", "seq", 1024])],
+    )
+    onnx.save_model(helper.make_model(graph, opset_imports=[helper.make_opsetid("", 18)]), str(path))
+
+
+def test_llm_attention_contract_rejects_causal_builder_shape(root: Path) -> None:
+    valid = root / "llm-full-attention.onnx"
+    save_llm_contract_model(valid, True)
+    validate_llm_attention_contract(valid)
+
+    causal = root / "llm-causal-attention.onnx"
+    save_llm_contract_model(causal, False)
+    try:
+        validate_llm_attention_contract(causal)
+    except RuntimeError as error:
+        assert "rank-4 BOOL" in str(error)
+    else:
+        raise AssertionError("2-D causal/padding attention contract was accepted")
 
 
 def test_manifest_uses_explicit_qwen_head_dim() -> None:
@@ -277,6 +302,7 @@ def main() -> None:
     with tempfile.TemporaryDirectory(prefix="tsukuyomichan-onnx-self-test-") as temp:
         root = Path(temp)
         test_modern_torch_onnx_export(root)
+        test_llm_attention_contract_rejects_causal_builder_shape(root)
         test_huggingface_distribution_and_model_card(root)
         test_source_runtime_files_cannot_be_clobbered(root)
         test_pinned_license_fetches(root)

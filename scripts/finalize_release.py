@@ -229,6 +229,12 @@ def build_manifest(release: Path, work: Path, hf_revision: str) -> dict:
             "hiddenSize": hidden_size,
             "numKvHeads": kv_heads,
             "headDim": head_dim,
+            "llmAttention": {
+                "mode": "omnivoice-noncausal",
+                "maskDtype": "bool",
+                "maskRank": 4,
+                "useCache": False,
+            },
             "decoderInputName": "codes",
             "decoderOutputName": "waveform_24k",
             "generation": {
@@ -298,6 +304,7 @@ This is an **unquantized FP32 quality-baseline conversion** of the pinned Tsukuy
 - No INT4, INT8, GPTQ, FP16, or BF16 conversion is permitted by this workflow.
 - Every ONNX graph is checked for quantization operators and reduced-precision weight initializers before release.
 - PyTorch and ONNX Runtime outputs are numerically compared for the exported components before release.
+- `llm_decoder.onnx` preserves OmniVoice's rank-4 Boolean non-causal attention mask and does not use KV cache; a 2-D causal/padding-mask contract is rejected.
 - The original 2.45 GB `model.safetensors` and the original Higgs `model.safetensors` are runner-local build inputs only. They are not Actions artifacts, cache entries, or release assets.
 
 ## Tsukuyomichan credit

@@ -20,6 +20,8 @@ higgs_decoder.onnx
 
 変換ではINT4、INT8、GPTQ、FP16、BF16を使用しません。LLM、audio embedding/head、Higgs decoderはいずれもFP32です。Release前にONNX graphを検査し、量子化operatorまたは低精度weight initializerが1個でも存在した場合はWorkflowを失敗させます。また、exportしたcomponentはPyTorch出力とONNX Runtime出力を数値比較してからReleaseへ進みます。
 
+OmniVoiceのiterative unmaskingはautoregressive causal decodingではありません。LLM backboneは元実装と同じ`[batch, 1, sequence, sequence]`の4次元Boolean attention maskを受ける形で直接ONNX exportし、KV cacheは使用しません。conditional sequenceは全位置を相互参照し、unconditional sequenceも実target区間を全結合にします。2次元padding/causal maskへ変換されたLLMはRelease gateで拒否します。
+
 つくよみちゃんfull-finetune向け推論設定は `num_step=16` を採用し、それ以外はOmniVoiceの標準生成値（`guidance_scale=2.0`、`t_shift=0.1`、`layer_penalty_factor=5.0`、`position_temperature=5.0`、`class_temperature=0.0`）を `runtime-manifest.json` に記録します。
 
 ## Source checkpointをArtifactへ保存しない

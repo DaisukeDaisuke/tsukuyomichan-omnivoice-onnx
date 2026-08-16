@@ -8,11 +8,8 @@ from __future__ import annotations
 
 import argparse
 import gc
-import json
 import os
 import shutil
-import subprocess
-import sys
 from pathlib import Path
 
 import numpy as np
@@ -71,6 +68,22 @@ class AudioHeadsDecoder(nn.Module):
         batch, sequence, _ = hidden_states.shape
         logits = self.heads(hidden_states)
         return logits.view(batch, sequence, NUM_CODEBOOKS, AUDIO_VOCAB).permute(0, 2, 1, 3)
+
+
+class LlmBackbone(nn.Module):
+    """Expose OmniVoice's Qwen backbone without changing its attention semantics."""
+
+    def __init__(self, llm: nn.Module):
+        super().__init__()
+        self.llm = llm
+
+    def forward(self, inputs_embeds: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
+        return self.llm(
+            inputs_embeds=inputs_embeds,
+            attention_mask=attention_mask,
+            use_cache=False,
+            return_dict=False,
+        )[0]
 
 
 class HiggsDecoder(nn.Module):
@@ -162,50 +175,6 @@ def externalize(raw_path: Path, final_path: Path, data_name: str) -> None:
 
 def external_metadata(tensor: onnx.TensorProto) -> dict[str, str]:
     return {entry.key: entry.value for entry in tensor.external_data}
-
-
-def move_builder_model_output(builder_output: Path, release: Path) -> None:
-    """Move only the LLM graph/data and GenAI config out of ModelBuilder output.
-
-    ModelBuilder also writes processing/tokenizer files.  Those must never be
-    allowed to overwrite the exact tokenizer copied from the pinned voice
-    checkpoint, so the builder runs in an isolated temporary directory.
-    """
-    model_source = builder_output / "llm_decoder.onnx"
-    if not model_source.is_file():
-        raise RuntimeError("ORT GenAI builder did not produce llm_decoder.onnx")
-
-    model = onnx.load(str(model_source), load_external_data=False)
-    locations: set[str] = set()
-    for tensor in model.graph.initializer:
-        if tensor.data_location != TensorProto.EXTERNAL:
-            continue
-        location = external_metadata(tensor).get("location")
-        if not location:
-            raise RuntimeError(f"Builder external initializer {tensor.name} has no location")
-        location_path = Path(location)
-        if location_path.is_absolute() or ".." in location_path.parts:
-            raise RuntimeError(f"Unsafe builder external-data location: {location}")
-        locations.add(location)
-
-    for location in sorted(locations):
-        source = builder_output / location
-        if not source.is_file():
-            raise RuntimeError(f"Builder model references missing external data: {location}")
-        destination = release / location
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        if destination.exists():
-            destination.unlink()
-        shutil.move(str(source), str(destination))
-
-    model_destination = release / model_source.name
-    if model_destination.exists():
-        model_destination.unlink()
-    shutil.move(str(model_source), str(model_destination))
-
-    genai_config = builder_output / "genai_config.json"
-    if genai_config.is_file():
-        shutil.copy2(genai_config, release / genai_config.name)
 
 
 def retarget_external_data(tensor: onnx.TensorProto, location: str, offset: int, length: int) -> None:
@@ -324,6 +293,39 @@ def assert_close(label: str, expected: np.ndarray, actual: np.ndarray, rtol: flo
         raise RuntimeError(f"{label} numerical equivalence failed (max_abs={max_abs})") from error
 
 
+def make_full_attention_mask(batch: int, sequence: int) -> torch.Tensor:
+    """Build an OmniVoice-style non-causal mask for converter equivalence tests.
+
+    The first item can attend to every position.  A second item, when present,
+    reproduces the unconditional layout used by iterative generation: a fully
+    connected target prefix followed by isolated padding positions.
+    """
+    attention = torch.ones((batch, 1, sequence, sequence), dtype=torch.bool)
+    if batch > 1:
+        target = sequence // 2
+        attention[1].zero_()
+        attention[1, :, :target, :target] = True
+        diagonal = torch.arange(target, sequence)
+        attention[1, :, diagonal, diagonal] = True
+    return attention
+
+
+def validate_llm_attention_contract(model_path: Path) -> None:
+    model = onnx.load(str(model_path), load_external_data=False)
+    inputs = {value.name: value for value in model.graph.input}
+    if set(inputs) != {"inputs_embeds", "attention_mask"}:
+        raise RuntimeError(f"LLM runtime inputs must be inputs_embeds + attention_mask only, got {sorted(inputs)}")
+    embeds = inputs["inputs_embeds"].type.tensor_type
+    attention = inputs["attention_mask"].type.tensor_type
+    if embeds.elem_type != TensorProto.FLOAT or len(embeds.shape.dim) != 3:
+        raise RuntimeError("LLM inputs_embeds must be rank-3 FP32")
+    if attention.elem_type != TensorProto.BOOL or len(attention.shape.dim) != 4:
+        raise RuntimeError("LLM attention_mask must be rank-4 BOOL to preserve OmniVoice non-causal attention")
+    head_axis = attention.shape.dim[1]
+    if not head_axis.HasField("dim_value") or head_axis.dim_value != 1:
+        raise RuntimeError("LLM attention_mask must have shape [batch, 1, sequence, sequence]")
+
+
 def save_backbone(source_dir: Path, work: Path, release: Path) -> None:
     from omnivoice import OmniVoice
 
@@ -337,14 +339,6 @@ def save_backbone(source_dir: Path, work: Path, release: Path) -> None:
     )
     model.eval()
     assert_fp32_module(model, "Tsukuyomichan full-finetune source")
-
-    qwen_dir = work / "qwen3-standalone"
-    qwen_dir.mkdir(parents=True, exist_ok=True)
-    model.llm.save_pretrained(str(qwen_dir), safe_serialization=True)
-    config_path = qwen_dir / "config.json"
-    config = json.loads(config_path.read_text(encoding="utf-8"))
-    config["architectures"] = ["Qwen3ForCausalLM"]
-    config_path.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
 
     # Preserve runtime tokenizer/config from the exact voice checkpoint.
     for name in ("tokenizer.json", "tokenizer_config.json", "chat_template.jinja"):
@@ -393,21 +387,57 @@ def save_backbone(source_dir: Path, work: Path, release: Path) -> None:
     )
     np.savez(work / "audio_heads_equiv.npz", hidden_states=hidden_states.numpy(), expected=expected_heads)
 
-    llm_inputs = torch.randn(1, sequence, HIDDEN_SIZE, dtype=torch.float32)
-    attention_mask = torch.ones(1, sequence, dtype=torch.int64)
+    # OmniVoice iterative decoding is MaskGIT-like, not autoregressive.  Its
+    # Qwen backbone receives a 4-D Boolean mask that makes each real sequence
+    # fully connected.  Export the actual AutoModel backbone directly.  A
+    # causal-LM/GenAI builder would collapse this contract to a 2-D padding
+    # mask and silently change generation semantics.
+    llm = LlmBackbone(model.llm).eval()
+    llm_inputs = torch.randn(2, sequence, HIDDEN_SIZE, dtype=torch.float32)
+    attention_mask = make_full_attention_mask(2, sequence)
+    alt_sequence = 9
+    alt_llm_inputs = torch.randn(1, alt_sequence, HIDDEN_SIZE, dtype=torch.float32)
+    alt_attention_mask = make_full_attention_mask(1, alt_sequence)
     with torch.no_grad():
-        llm_expected = model.llm(inputs_embeds=llm_inputs, attention_mask=attention_mask, use_cache=False, return_dict=True).last_hidden_state.cpu().numpy()
-    np.savez(work / "llm_equiv.npz", inputs_embeds=llm_inputs.numpy(), attention_mask=attention_mask.numpy(), expected=llm_expected)
+        llm_expected = llm(llm_inputs, attention_mask).cpu().numpy()
+        alt_llm_expected = llm(alt_llm_inputs, alt_attention_mask).cpu().numpy()
+    np.savez(
+        work / "llm_equiv.npz",
+        inputs_embeds=llm_inputs.numpy(),
+        attention_mask=attention_mask.numpy(),
+        expected=llm_expected,
+        alt_inputs_embeds=alt_llm_inputs.numpy(),
+        alt_attention_mask=alt_attention_mask.numpy(),
+        alt_expected=alt_llm_expected,
+    )
 
-    # Release the 2.45 GB source checkpoint and PyTorch model before building the
-    # FP32 LLM ONNX. The qwen3-standalone directory is a temporary build input.
-    del embeddings, heads, model
+    batch_dim = torch.export.Dim("batch", min=1)
+    sequence_dim = torch.export.Dim("sequence", min=1)
+    torch.onnx.export(
+        llm,
+        (llm_inputs, attention_mask),
+        release / "llm_decoder.onnx",
+        input_names=["inputs_embeds", "attention_mask"],
+        output_names=["hidden_states"],
+        opset_version=18,
+        dynamo=True,
+        external_data=True,
+        dynamic_shapes={
+            "inputs_embeds": {0: batch_dim, 1: sequence_dim},
+            "attention_mask": {0: batch_dim, 2: sequence_dim, 3: sequence_dim},
+        },
+    )
+
+    # All PyTorch goldens and ONNX weights are now materialized, so release the
+    # multi-GB source model before loading ONNX Runtime for equivalence checks.
+    del embeddings, heads, llm, model, llm_inputs, attention_mask, alt_llm_inputs, alt_attention_mask
     gc.collect()
 
     externalize(raw_embeddings, release / "audio_embeddings_encoder.onnx", "audio_embeddings_encoder.onnx.data")
     externalize(raw_heads, release / "audio_heads_decoder.onnx", "audio_heads_decoder.onnx.data")
     split_oversized_external_data(release / "audio_embeddings_encoder.onnx")
     split_oversized_external_data(release / "audio_heads_decoder.onnx")
+    split_oversized_external_data(release / "llm_decoder.onnx")
 
     emb_case = np.load(work / "audio_embeddings_equiv.npz")
     emb_actual = ort_session(release / "audio_embeddings_encoder.onnx").run(
@@ -428,34 +458,6 @@ def save_backbone(source_dir: Path, work: Path, release: Path) -> None:
     shutil.rmtree(source_dir, ignore_errors=True)
     gc.collect()
 
-    builder_cache = work / "builder-cache"
-    builder_output = work / "builder-output"
-    shutil.rmtree(builder_output, ignore_errors=True)
-    command = [
-        sys.executable,
-        "-m",
-        "onnxruntime_genai.models.builder",
-        "-i",
-        str(qwen_dir),
-        "-o",
-        str(builder_output),
-        "-p",
-        "fp32",
-        "-e",
-        "cpu",
-        "-c",
-        str(builder_cache),
-        "--extra_options",
-        "filename=llm_decoder.onnx",
-        "exclude_embeds=true",
-        "exclude_lm_head=true",
-        "shared_embeddings=false",
-    ]
-    print("Running:", " ".join(command))
-    subprocess.run(command, check=True)
-    move_builder_model_output(builder_output, release)
-    split_oversized_external_data(release / "llm_decoder.onnx")
-
     for model_path in (
         release / "audio_embeddings_encoder.onnx",
         release / "audio_heads_decoder.onnx",
@@ -463,68 +465,25 @@ def save_backbone(source_dir: Path, work: Path, release: Path) -> None:
     ):
         validate_unquantized_graph(model_path)
 
+    validate_llm_attention_contract(release / "llm_decoder.onnx")
     verify_llm_equivalence(release / "llm_decoder.onnx", work / "llm_equiv.npz")
-    shutil.rmtree(qwen_dir, ignore_errors=True)
-    shutil.rmtree(builder_cache, ignore_errors=True)
-    shutil.rmtree(builder_output, ignore_errors=True)
     gc.collect()
-
-
-def infer_dynamic_shape(shape: list, name: str) -> tuple[int, ...]:
-    result: list[int] = []
-    for index, dim in enumerate(shape):
-        if isinstance(dim, int) and dim >= 0:
-            result.append(dim)
-            continue
-        text = str(dim).lower()
-        if "batch" in text or index == 0:
-            result.append(1)
-        elif "head" in text and "size" not in text:
-            result.append(8)
-        elif "head" in text and "size" in text:
-            result.append(128)
-        elif "past" in text or "cache" in text:
-            result.append(0)
-        else:
-            # Qwen3 cache tensors are [B, kv_heads, past_seq, head_dim].
-            if len(shape) == 4 and index == 1:
-                result.append(8)
-            elif len(shape) == 4 and index == 2:
-                result.append(0)
-            elif len(shape) == 4 and index == 3:
-                result.append(128)
-            else:
-                raise RuntimeError(f"Cannot infer dynamic input dimension for {name}: {shape}")
-    return tuple(result)
 
 
 def verify_llm_equivalence(model_path: Path, case_path: Path) -> None:
     case = np.load(case_path)
     session = ort_session(model_path)
-    embeds = case["inputs_embeds"].astype(np.float32)
-    attention = case["attention_mask"].astype(np.int64)
-    sequence = embeds.shape[1]
-    feed = {}
-    for input_meta in session.get_inputs():
-        name = input_meta.name
-        lower = name.lower()
-        if name == "inputs_embeds":
-            feed[name] = embeds
-        elif name == "attention_mask":
-            feed[name] = attention
-        elif name == "position_ids":
-            feed[name] = np.arange(sequence, dtype=np.int64)[None, :]
-        elif "past_key_values" in lower or "past_key" in lower or "past_value" in lower:
-            shape = infer_dynamic_shape(list(input_meta.shape), name)
-            feed[name] = np.zeros(shape, dtype=np.float32)
-        elif "past_sequence" in lower:
-            feed[name] = np.array([0], dtype=np.int64)
-        else:
-            raise RuntimeError(f"Unexpected LLM input generated by ModelBuilder: {name} {input_meta.shape} {input_meta.type}")
-    output_names = [output.name for output in session.get_outputs()]
-    hidden_name = next((name for name in output_names if "hidden" in name.lower()), output_names[0])
-    actual = session.run([hidden_name], feed)[0]
-    assert_close("llm_decoder", case["expected"], actual, rtol=1e-3, atol=1e-3)
+    if [item.name for item in session.get_inputs()] != ["inputs_embeds", "attention_mask"]:
+        raise RuntimeError("LLM ONNX input contract changed unexpectedly")
+    for prefix in ("", "alt_"):
+        actual = session.run(
+            ["hidden_states"],
+            {
+                "inputs_embeds": case[f"{prefix}inputs_embeds"].astype(np.float32),
+                "attention_mask": case[f"{prefix}attention_mask"].astype(np.bool_),
+            },
+        )[0]
+        assert_close(f"llm_decoder {prefix or 'primary'}", case[f"{prefix}expected"], actual, rtol=1e-3, atol=1e-3)
 
 
 def save_higgs(higgs_dir: Path, work: Path, release: Path) -> None:
