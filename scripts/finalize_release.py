@@ -33,12 +33,32 @@ SOURCE_MODEL_SIZE = 2_450_344_144
 SOURCE_MODEL_SHA256 = "9ebaa8dd3bf35ceb6217cd19142bdabe6d6c044cca40672d2ae163d1a90ab47e"
 HIGGS_MODEL_SIZE = 805_665_628
 HIGGS_MODEL_SHA256 = "fe7c5e8785e0a05833e1bfc3e002ec7f55af21e306b2e7154a448c1f54ccfb0d"
+HF_MIRROR_REPO = "RabbitDaisuke/tsukuyomichan-omnivoice-full-finetune-onnx"
 SOURCE_RUNTIME_RELEASE_FILES = {
     "config.json": "omnivoice_config.json",
     "tokenizer.json": "tokenizer.json",
     "tokenizer_config.json": "tokenizer_config.json",
     "chat_template.jinja": "chat_template.jinja",
 }
+
+
+def build_distribution(hf_revision: str) -> dict:
+    if not hf_revision or hf_revision in {"main", "master"}:
+        raise RuntimeError("Hugging Face mirror revision must be an immutable build-specific revision")
+    return {
+        "provider": "github-release",
+        "repo": "DaisukeDaisuke/tsukuyomichan-omnivoice-onnx",
+        "tag": "full-finetune-latest",
+        "assetBaseUrl": "https://github.com/DaisukeDaisuke/tsukuyomichan-omnivoice-onnx/releases/download/full-finetune-latest/",
+        "mirrors": [
+            {
+                "provider": "huggingface",
+                "repo": HF_MIRROR_REPO,
+                "revision": hf_revision,
+                "assetBaseUrl": f"https://huggingface.co/{HF_MIRROR_REPO}/resolve/{hf_revision}/",
+            }
+        ],
+    }
 
 
 def sha256_file(path: Path, chunk_size: int = 8 * 1024 * 1024) -> str:
@@ -140,7 +160,7 @@ def resolve_llm_runtime_dimensions(config: dict) -> tuple[int, int, int]:
     return hidden_size, kv_heads, head_dim
 
 
-def build_manifest(release: Path, work: Path) -> dict:
+def build_manifest(release: Path, work: Path, hf_revision: str) -> dict:
     full_source = load_json(work / "full-source.json")
     higgs_source = load_json(work / "higgs-source.json")
     config = load_json(release / "omnivoice_config.json")
@@ -180,12 +200,7 @@ def build_manifest(release: Path, work: Path) -> dict:
         "displayName": "Higgs Audio 2 Tsukuyomichan OmniVoice Full Finetune ONNX FP32",
         "qualityProfile": "fp32-unquantized",
         "quantized": False,
-        "distribution": {
-            "provider": "github-release",
-            "repo": "DaisukeDaisuke/tsukuyomichan-omnivoice-onnx",
-            "tag": "full-finetune-latest",
-            "assetBaseUrl": "https://github.com/DaisukeDaisuke/tsukuyomichan-omnivoice-onnx/releases/download/full-finetune-latest/",
-        },
+        "distribution": build_distribution(hf_revision),
         "source": {
             "omnivoiceCode": {
                 "repo": "k2-fsa/OmniVoice",
@@ -328,13 +343,14 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--work-dir", required=True)
     parser.add_argument("--release-dir", required=True)
+    parser.add_argument("--hf-revision", required=True)
     args = parser.parse_args()
     work = Path(args.work_dir).resolve()
     release = Path(args.release_dir).resolve()
 
     check_release_files(release)
     verify_source_runtime_files(release, work)
-    manifest = build_manifest(release, work)
+    manifest = build_manifest(release, work, args.hf_revision)
     (release / "runtime-manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     write_notices(release, manifest)
     check_release_files(release)

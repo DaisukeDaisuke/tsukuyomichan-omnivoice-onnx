@@ -16,6 +16,7 @@ jobs:
     timeout-minutes: 240
     env:
       PYTHONUNBUFFERED: "1"
+      HF_REPO_ID: RabbitDaisuke/tsukuyomichan-omnivoice-full-finetune-onnx
     steps:
       - name: Set runner-local build paths
         shell: bash
@@ -24,12 +25,22 @@ jobs:
           printf 'BUILD_ROOT=%s\n' "$build_root" >> "$GITHUB_ENV"
           printf 'HF_HOME=%s\n' "$build_root/hf-home" >> "$GITHUB_ENV"
           printf 'RELEASE_DIR=%s\n' "$GITHUB_WORKSPACE/dist" >> "$GITHUB_ENV"
+          printf 'HF_REVISION=gh-%s-%s\n' "$GITHUB_SHA" "$GITHUB_RUN_ID" >> "$GITHUB_ENV"
 
       - name: Checkout converter
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
+
+      - name: Require Hugging Face CI token
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          if [ -z "$HF_TOKEN" ]; then
+            echo "Repository secret HF_TOKEN is required for the Hugging Face mirror." >&2
+            exit 1
+          fi
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.11"
 
@@ -41,6 +52,11 @@ jobs:
 
       - name: Run converter behavioral safety tests
         run: python scripts/self_test.py
+
+      - name: Verify Hugging Face token and mirror repository
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: python scripts/upload_huggingface.py prepare --repo-id "$HF_REPO_ID"
 
       - name: Prepare runner-local build directories
         run: |
@@ -84,7 +100,11 @@ jobs:
         run: python scripts/fetch_meta_license.py --output "$RELEASE_DIR/META-LLAMA-3-LICENSE.txt"
 
       - name: Finalize release manifest, notices, and hashes
-        run: python scripts/finalize_release.py --work-dir "$BUILD_ROOT" --release-dir "$RELEASE_DIR"
+        run: |
+          python scripts/finalize_release.py \
+            --work-dir "$BUILD_ROOT" \
+            --release-dir "$RELEASE_DIR" \
+            --hf-revision "$HF_REVISION"
 
       - name: Final release safety gate
         run: |
@@ -101,6 +121,17 @@ jobs:
           done < <(find "$RELEASE_DIR" -maxdepth 1 -type f -print0)
           (cd "$RELEASE_DIR" && sha256sum --check SHA256SUMS)
           du -h "$RELEASE_DIR"/*
+
+      - name: Mirror verified runtime to Hugging Face
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          python scripts/upload_huggingface.py publish \
+            --release-dir "$RELEASE_DIR" \
+            --repo-id "$HF_REPO_ID" \
+            --revision "$HF_REVISION" \
+            --github-sha "$GITHUB_SHA" \
+            --github-run-number "$GITHUB_RUN_NUMBER"
 
       - name: Update latest FP32 runtime release
         uses: ncipollo/release-action@v1.21.0

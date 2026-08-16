@@ -1,6 +1,6 @@
 # tsukuyomichan-omnivoice-onnx
 
-`kizuna-intelligence/tsukuyomichan-omnivoice-full-finetune` を、ブラウザ/ONNX Runtime向けのsplit ONNXへ**非量子化FP32のまま**変換してGitHub Releaseへ公開するための変換専用リポジトリです。
+`kizuna-intelligence/tsukuyomichan-omnivoice-full-finetune` を、ブラウザ/ONNX Runtime向けのsplit ONNXへ**非量子化FP32のまま**変換し、GitHub ReleaseとHugging Face mirrorへ公開するための変換専用リポジトリです。
 
 ## 変換方針
 
@@ -45,6 +45,14 @@ Workflowには `actions/upload-artifact` と `actions/cache` を使用してい�
 - つくよみちゃんfull-finetuneのmodel card
 - pinned `k2-fsa/OmniVoice` のmodel card / code LICENSE
 - Boson Higgs Audio 2 / Meta Llama 3のライセンス原文
+
+## Hugging Face browser mirror
+
+GitHub Releaseは監査・Releaseアーカイブとして維持します。同じ検証済みruntime assetを、ブラウザからCORS/Range取得するためのmirrorとして `RabbitDaisuke/tsukuyomichan-omnivoice-full-finetune-onnx` にもGitHub Actionsからアップロードします。
+
+Hugging Face側のModel Card metadataは `base_model: kizuna-intelligence/tsukuyomichan-omnivoice-full-finetune` とし、変換モデルの親をfull-finetune checkpointへ直接結びます。各Workflow runは `gh-<GitHub SHA>-<GitHub run ID>` というbuild固有tagを作り、`runtime-manifest.json`にもその固定revisionを記録します。ブラウザruntimeはmutableな `main` ではなく、このbuild固有revisionとasset SHA-256を使用できます。
+
+Workflowにはrepository secret **`HF_TOKEN`** が必須です。Hugging FaceのFine-grained Access Tokenの `CI/CD` presetを使用し、token値をリポジトリへcommitしないでください。元の2.45 GB voice checkpointやHiggs source checkpointはHugging Face mirrorにもアップロードしません。
 
 ## Source pins
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
 import tempfile
 import subprocess
@@ -18,10 +19,12 @@ from export_fp32 import ort_session, split_oversized_external_data, torch_export
 from finalize_release import (
     REQUIRED_FILES,
     REQUIRED_MODELS,
+    build_distribution,
     check_release_files,
     resolve_llm_runtime_dimensions,
     verify_source_runtime_files,
 )
+from upload_huggingface import BASE_MODEL, DEFAULT_HF_REPO_ID, build_model_card
 
 
 def test_required_model_apis_import() -> None:
@@ -29,6 +32,7 @@ def test_required_model_apis_import() -> None:
     # OmniVoice's own package for the model class; it is not a Transformers
     # top-level model export.
     from omnivoice import OmniVoice
+    from huggingface_hub import HfApi
     import onnx_ir
     import onnxscript
     from transformers import HiggsAudioV2TokenizerModel
@@ -37,6 +41,12 @@ def test_required_model_apis_import() -> None:
     assert callable(getattr(onnx_ir, "load", None))
     assert hasattr(onnxscript, "__version__")
     assert callable(getattr(HiggsAudioV2TokenizerModel, "from_pretrained", None))
+    assert callable(getattr(HfApi, "whoami", None))
+    assert callable(getattr(HfApi, "create_repo", None))
+    upload_parameters = inspect.signature(HfApi.upload_folder).parameters
+    tag_parameters = inspect.signature(HfApi.create_tag).parameters
+    assert "delete_patterns" in upload_parameters
+    assert "exist_ok" in tag_parameters
 
     # The ORT GenAI wheel exposes the model builder as a Python module, but
     # builder-only dependencies are not necessarily pulled in by the runtime
@@ -96,6 +106,42 @@ def test_manifest_uses_explicit_qwen_head_dim() -> None:
     assert hidden_size == 1024
     assert kv_heads == 8
     assert head_dim == 128
+
+
+def test_huggingface_distribution_and_model_card(root: Path) -> None:
+    revision = "gh-0123456789abcdef-12345"
+    distribution = build_distribution(revision)
+    assert distribution["provider"] == "github-release"
+    mirror = distribution["mirrors"][0]
+    assert mirror["repo"] == DEFAULT_HF_REPO_ID
+    assert mirror["revision"] == revision
+    assert mirror["assetBaseUrl"].endswith(f"/{revision}/")
+
+    release = root / "hf-card"
+    release.mkdir()
+    (release / "runtime-manifest.json").write_text(
+        json.dumps(
+            {
+                "qualityProfile": "fp32-unquantized",
+                "source": {
+                    "voiceCheckpoint": {"revision": "voice-revision", "modelSha256": "a" * 64},
+                    "audioCodec": {"revision": "codec-revision"},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    card = build_model_card(release, revision, "b" * 40, "10")
+    assert f"base_model: {BASE_MODEL}" in card
+    assert "license: other" in card
+    assert revision in card
+    assert "### 出力音声の利用制限" in card
+    assert "人を批判・攻撃すること。" in card
+    assert "特定の政治的立場・宗教・思想への賛同または反対を呼びかけること。" in card
+    assert "刺激の強い表現をゾーニングなしで公開すること。" in card
+    assert "他者に対して二次利用（素材としての利用）を許可する形で公開すること。" in card
+    assert "### 改変・再配布について" in card
+    assert "派生ソフトや再配布されたデータにもコピーレフトされます。" in card
 
 
 def test_source_runtime_files_cannot_be_clobbered(root: Path) -> None:
@@ -231,6 +277,7 @@ def main() -> None:
     with tempfile.TemporaryDirectory(prefix="tsukuyomichan-onnx-self-test-") as temp:
         root = Path(temp)
         test_modern_torch_onnx_export(root)
+        test_huggingface_distribution_and_model_card(root)
         test_source_runtime_files_cannot_be_clobbered(root)
         test_pinned_license_fetches(root)
         test_external_data_split(root)
