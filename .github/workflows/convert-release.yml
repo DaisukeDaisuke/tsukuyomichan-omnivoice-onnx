@@ -1,0 +1,113 @@
+name: Convert full-finetune to FP32 ONNX
+
+"on":
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: tsukuyomichan-full-finetune-fp32-release
+  cancel-in-progress: false
+
+jobs:
+  convert-and-release:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    env:
+      BUILD_ROOT: ${{ runner.temp }}/tsukuyomichan-omnivoice-onnx-${{ github.run_id }}
+      HF_HOME: ${{ runner.temp }}/tsukuyomichan-omnivoice-onnx-${{ github.run_id }}/hf-home
+      RELEASE_DIR: ${{ github.workspace }}/dist
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - name: Checkout converter
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install pinned build dependencies
+        run: python -m pip install --disable-pip-version-check --no-cache-dir -r requirements-build.txt
+
+      - name: Validate converter source
+        run: python -m compileall -q scripts
+
+      - name: Run converter behavioral safety tests
+        run: python scripts/self_test.py
+
+      - name: Prepare runner-local build directories
+        run: |
+          rm -rf "$BUILD_ROOT" "$RELEASE_DIR"
+          mkdir -p "$BUILD_ROOT" "$RELEASE_DIR"
+
+      - name: Download pinned Tsukuyomichan full-finetune checkpoint
+        run: python scripts/download_sources.py full --work-dir "$BUILD_ROOT" --release-dir "$RELEASE_DIR"
+
+      - name: Export and verify FP32 OmniVoice backbone
+        run: |
+          python scripts/export_fp32.py backbone \
+            --source-dir "$BUILD_ROOT/full-finetune" \
+            --work-dir "$BUILD_ROOT" \
+            --release-dir "$RELEASE_DIR"
+
+      - name: Assert original voice checkpoint was discarded
+        run: |
+          test ! -e "$BUILD_ROOT/full-finetune/model.safetensors"
+          test ! -e "$RELEASE_DIR/model.safetensors"
+          if find "$RELEASE_DIR" -maxdepth 1 -type f -name '*.safetensors' -print -quit | grep -q .; then
+            echo "Refusing to release a safetensors build input." >&2
+            exit 1
+          fi
+
+      - name: Download pinned Higgs Audio 2 codec source
+        run: python scripts/download_sources.py higgs --work-dir "$BUILD_ROOT" --release-dir "$RELEASE_DIR"
+
+      - name: Export and verify FP32 Higgs decoder
+        run: |
+          python scripts/export_fp32.py higgs \
+            --source-dir "$BUILD_ROOT/base-omnivoice/audio_tokenizer" \
+            --work-dir "$BUILD_ROOT" \
+            --release-dir "$RELEASE_DIR"
+          rm -rf "$BUILD_ROOT/base-omnivoice"
+
+      - name: Include verified Meta Llama 3 license
+        run: python scripts/fetch_meta_license.py --output "$RELEASE_DIR/META-LLAMA-3-LICENSE.txt"
+
+      - name: Finalize release manifest, notices, and hashes
+        run: python scripts/finalize_release.py --work-dir "$BUILD_ROOT" --release-dir "$RELEASE_DIR"
+
+      - name: Final release safety gate
+        run: |
+          if find "$RELEASE_DIR" -maxdepth 1 -type f -name '*.safetensors' -print -quit | grep -q .; then
+            echo "Safetensors source checkpoint leaked into release directory." >&2
+            exit 1
+          fi
+          while IFS= read -r -d '' file; do
+            size=$(stat -c '%s' "$file")
+            if [ "$size" -gt 1800000000 ]; then
+              echo "Release asset exceeds 1.8 GB: $file ($size)" >&2
+              exit 1
+            fi
+          done < <(find "$RELEASE_DIR" -maxdepth 1 -type f -print0)
+          (cd "$RELEASE_DIR" && sha256sum --check SHA256SUMS)
+          du -h "$RELEASE_DIR"/*
+
+      - name: Update latest FP32 runtime release
+        uses: ncipollo/release-action@v1.21.0
+        with:
+          artifacts: ${{ github.workspace }}/dist/*
+          artifactErrorsFailBuild: true
+          bodyFile: ${{ github.workspace }}/dist/RELEASE_NOTES.md
+          makeLatest: true
+          name: Higgs Audio 2 Tsukuyomichan OmniVoice ONNX FP32 - Latest (Build ${{ github.run_number }})
+          tag: full-finetune-latest
+          commit: ${{ github.sha }}
+          allowUpdates: true
+          removeArtifacts: true
+          prerelease: false
+
+      - name: Remove runner-local source checkpoints
+        if: always()
+        run: rm -rf "$BUILD_ROOT"

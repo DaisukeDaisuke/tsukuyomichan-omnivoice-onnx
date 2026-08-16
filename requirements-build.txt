@@ -1,0 +1,7 @@
+torch==2.13.0
+transformers==5.10.2
+huggingface_hub[hf_xet]==1.24.0
+onnx==1.22.0
+onnxruntime-genai==0.14.1
+numpy==1.26.4
+safetensors==0.6.2
