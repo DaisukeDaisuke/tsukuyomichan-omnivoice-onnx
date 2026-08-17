@@ -12,7 +12,7 @@ from huggingface_hub import HfApi
 DEFAULT_HF_REPO_ID = "RabbitDaisuke/tsukuyomichan-omnivoice-full-finetune-onnx"
 BASE_MODEL = "kizuna-intelligence/tsukuyomichan-omnivoice-full-finetune"
 JAPANESE_SAMPLE_SPECS = (
-    ("01_customs_tariff_rejection.wav", "税関関税許可局、関税許可を急遽却下"),
+    ("01_customs_tariff_rejection.wav", "東京都税関関税許可局、関税許可を急遽却下"),
     ("02_webassembly_vibe_coding.wav", "WebAssemblyをLLMでVibe Coding中"),
     ("03_found_me_waiting.wav", "えへへ、見つけてくれたんだ！ずっとここで待ってたんだよ？"),
 )

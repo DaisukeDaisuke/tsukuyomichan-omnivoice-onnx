@@ -71,7 +71,7 @@ Workflowにはrepository secret **`HF_TOKEN`** が必須です。Hugging Faceの
 
 ### Japanese: 税関関税許可局
 
-Text: `税関関税許可局、関税許可を急遽却下`
+Text: `東京都税関関税許可局、関税許可を急遽却下`
 
 FP32:
 <audio controls src="https://huggingface.co/RabbitDaisuke/tsukuyomichan-omnivoice-full-finetune-onnx/resolve/main/samples/01_customs_tariff_rejection.wav"></audio>

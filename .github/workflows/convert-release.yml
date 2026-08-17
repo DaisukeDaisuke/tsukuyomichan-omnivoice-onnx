@@ -186,7 +186,7 @@ jobs:
 
           generate_sample \
             01_customs_tariff_rejection.wav \
-            '税関関税許可局、関税許可を急遽却下' \
+            '東京都税関関税許可局、関税許可を急遽却下' \
             2026081601 \
             ja
           generate_sample \
