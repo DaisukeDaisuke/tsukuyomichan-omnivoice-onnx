@@ -69,7 +69,7 @@ Workflowにはrepository secret **`HF_TOKEN`** が必須です。Hugging Faceの
 
 以下のWAVは、各profileのRelease workflowで変換・検証が完了したruntimeを使い、GitHub ActionsのCPU runner上でnative Python + ONNX Runtimeにより**同一文章・同一seed**でオフライン生成します。下のplayerは生成済みWAVを再生するだけで、ブラウザ内でモデル推論は行いません。FP32とMobile INT8をそのまま聞き比べられます。
 
-### Japanese: 税関関税許可局
+### Japanese: 東京都税関関税許可局
 
 Text: `東京都税関関税許可局、関税許可を急遽却下`
 
